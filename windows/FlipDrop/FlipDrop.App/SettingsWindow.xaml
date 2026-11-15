@@ -1,0 +1,298 @@
+<Window x:Class="FlipDrop.App.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="FlipDrop" Height="640" Width="960" MinHeight="560" MinWidth="840"
+        Background="{StaticResource WindowBg}" WindowStartupLocation="CenterScreen">
+
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0"/>
+  </shell:WindowChrome.WindowChrome>
+
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="224"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+
+    <!-- Sidebar -->
+    <Border Grid.Column="0" Background="{StaticResource SidebarBg}" BorderBrush="{StaticResource CardBorder}" BorderThickness="0,0,1,0">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Top" Margin="18,46,18,10" Orientation="Horizontal">
+          <Border Width="26" Height="26" CornerRadius="8" Background="{StaticResource FlipGradient}"/>
+          <TextBlock Text="FlipDrop" FontSize="18" FontWeight="Bold" Margin="10,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <TextBlock DockPanel.Dock="Bottom" x:Name="VersionText" Text="v1.0 · local Wi-Fi only"
+                   Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="20,10,10,16"/>
+
+        <StackPanel Margin="0,8,0,0">
+          <RadioButton x:Name="NavPair" Style="{StaticResource NavItem}" Content="Pair a phone" IsChecked="True"/>
+          <RadioButton x:Name="NavEffects" Style="{StaticResource NavItem}" Content="Effects"/>
+          <RadioButton x:Name="NavDelivery" Style="{StaticResource NavItem}" Content="Delivery"/>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <!-- Window buttons -->
+    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,6,6,0" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+      <Button x:Name="MinBtn" Width="40" Height="30" ToolTip="Minimize">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent" CornerRadius="7">
+              <TextBlock Text="&#xE921;" FontFamily="Segoe MDL2 Assets" FontSize="10" Foreground="{StaticResource TextPrimary}"
+                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="{StaticResource HoverBg}"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+      </Button>
+      <Button x:Name="CloseBtn" Width="40" Height="30" ToolTip="Close to tray">
+        <Button.Template>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent" CornerRadius="7">
+              <TextBlock Text="&#xE8BB;" FontFamily="Segoe MDL2 Assets" FontSize="10" Foreground="{StaticResource TextPrimary}"
+                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="#FFF3B0C0"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Button.Template>
+      </Button>
+    </StackPanel>
+
+    <!-- Content -->
+    <Grid Grid.Column="1" Margin="0,44,0,0">
+
+      <!-- PAIR PANEL -->
+      <ScrollViewer x:Name="PanelPair" VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="30,18,30,30">
+          <TextBlock Text="Pair a phone" FontSize="22" FontWeight="Bold"/>
+          <TextBlock Text="Open FlipDrop on your phone, tap Pair with Laptop, find this laptop, and enter the code."
+                     Foreground="{StaticResource TextSecondary}" FontSize="13" Margin="0,4,0,18"/>
+
+          <Border Background="{StaticResource CardBg}" CornerRadius="16" BorderBrush="{StaticResource CardBorder}" BorderThickness="1" Padding="26">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+
+              <Grid Grid.Column="0" Width="168" Height="168">
+                <Ellipse Stroke="{StaticResource CardBorder}" StrokeThickness="10" Width="168" Height="168"/>
+                <Path x:Name="RingPath" Stroke="{StaticResource AccentBrush}" StrokeThickness="10" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                  <TextBlock x:Name="CodeText" Text="------" FontSize="34" FontWeight="Bold"
+                             HorizontalAlignment="Center" FontFamily="Consolas, Segoe UI"/>
+                  <TextBlock x:Name="CountdownText" Text="" Foreground="{StaticResource TextSecondary}"
+                             FontSize="11.5" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                </StackPanel>
+              </Grid>
+
+              <StackPanel Grid.Column="1" Margin="28,4,0,0" VerticalAlignment="Center">
+                <TextBlock Text="This laptop" Foreground="{StaticResource TextSecondary}" FontSize="12"/>
+                <TextBlock x:Name="LaptopName" Text="" FontSize="17" FontWeight="SemiBold" Margin="0,2,0,10"/>
+                <TextBlock Text="Addresses" Foreground="{StaticResource TextSecondary}" FontSize="12"/>
+                <ItemsControl x:Name="IpList" Margin="0,2,0,0">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Text="{Binding}" FontFamily="Consolas, Segoe UI" FontSize="13" Margin="0,1"/>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Grid>
+          </Border>
+
+          <TextBlock Text="Paired devices" FontSize="15" FontWeight="SemiBold" Margin="2,24,0,8"/>
+          <Border Background="{StaticResource CardBg}" CornerRadius="16" BorderBrush="{StaticResource CardBorder}" BorderThickness="1" Padding="8">
+            <StackPanel>
+              <TextBlock x:Name="EmptyDevices" Text="No devices yet." Foreground="{StaticResource TextSecondary}"
+                         FontSize="13" Margin="14,12"/>
+              <ItemsControl x:Name="DevicesList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Padding="12,10" Margin="2" CornerRadius="10">
+                      <Grid>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                          <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold"/>
+                          <TextBlock Text="{Binding Sub}" Foreground="{StaticResource TextSecondary}" FontSize="12"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="Revoke" Style="{StaticResource GhostButton}"
+                                Tag="{Binding Id}" Click="OnRevokeClick" VerticalAlignment="Center"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+
+      <!-- EFFECTS PANEL -->
+      <ScrollViewer x:Name="PanelEffects" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="30,18,30,30">
+          <TextBlock Text="Effects" FontSize="22" FontWeight="Bold"/>
+          <TextBlock Text="How a photo makes its entrance when it lands on this laptop."
+                     Foreground="{StaticResource TextSecondary}" FontSize="13" Margin="0,4,0,18"/>
+
+          <TextBlock Text="Send zone" FontSize="15" FontWeight="SemiBold" Margin="2,0,0,8"/>
+          <Border Background="#FFEDEFF4" CornerRadius="11" Padding="4" HorizontalAlignment="Left">
+            <StackPanel Orientation="Horizontal">
+              <RadioButton x:Name="EdgeRight" GroupName="edge" Style="{StaticResource SegItem}" Content="Right" IsChecked="True"/>
+              <RadioButton x:Name="EdgeLeft" GroupName="edge" Style="{StaticResource SegItem}" Content="Left"/>
+              <RadioButton x:Name="EdgeTop" GroupName="edge" Style="{StaticResource SegItem}" Content="Top"/>
+              <RadioButton x:Name="EdgeBottom" GroupName="edge" Style="{StaticResource SegItem}" Content="Bottom"/>
+            </StackPanel>
+          </Border>
+
+          <TextBlock Text="Style" FontSize="15" FontWeight="SemiBold" Margin="2,22,0,8"/>
+          <UniformGrid Columns="3">
+            <!-- Rainbow -->
+            <Border x:Name="CardRainbow" Margin="0,0,10,0" CornerRadius="16" Background="{StaticResource CardBg}"
+                    BorderBrush="{StaticResource CardBorder}" BorderThickness="2" Cursor="Hand" MouseLeftButtonUp="OnPickRainbow">
+              <StackPanel>
+                <Border CornerRadius="14,14,0,0" Height="118" ClipToBounds="True">
+                  <Grid>
+                    <Rectangle>
+                      <Rectangle.Fill>
+                        <LinearGradientBrush StartPoint="0,1" EndPoint="1,0">
+                          <GradientStop Color="#FF2A3A72" Offset="0"/>
+                          <GradientStop Color="#FF5B4B9E" Offset="1"/>
+                        </LinearGradientBrush>
+                      </Rectangle.Fill>
+                    </Rectangle>
+                    <Ellipse Width="150" Height="150" HorizontalAlignment="Right" Margin="0,-40,-40,0">
+                      <Ellipse.Effect><BlurEffect Radius="30"/></Ellipse.Effect>
+                      <Ellipse.Fill>
+                        <RadialGradientBrush>
+                          <GradientStop Color="#FFFFB070" Offset="0"/>
+                          <GradientStop Color="#FFFF7CC0" Offset="0.5"/>
+                          <GradientStop Color="#008A5BE0" Offset="1"/>
+                        </RadialGradientBrush>
+                      </Ellipse.Fill>
+                    </Ellipse>
+                    <Border Width="52" Height="68" CornerRadius="7" Background="White" Opacity="0.95"
+                            HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <Path x:Name="CheckRainbow" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
+                          Data="M0,5 L4,9 L11,0" Stroke="White" StrokeThickness="2.4"/>
+                  </Grid>
+                </Border>
+                <StackPanel Margin="14,10,14,14">
+                  <TextBlock Text="Rainbow" FontSize="14.5" FontWeight="SemiBold"/>
+                  <TextBlock Text="A band of light" Foreground="{StaticResource TextSecondary}" FontSize="12"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+
+            <!-- Portal -->
+            <Border x:Name="CardPortal" Margin="5,0,5,0" CornerRadius="16" Background="{StaticResource CardBg}"
+                    BorderBrush="{StaticResource CardBorder}" BorderThickness="2" Cursor="Hand" MouseLeftButtonUp="OnPickPortal">
+              <StackPanel>
+                <Border CornerRadius="14,14,0,0" Height="118" ClipToBounds="True" Background="#FF101830">
+                  <Grid>
+                    <Ellipse Width="120" Height="120" Stroke="#FFFF9646" StrokeThickness="9" HorizontalAlignment="Center">
+                      <Ellipse.Effect><BlurEffect Radius="3"/></Ellipse.Effect>
+                    </Ellipse>
+                    <Ellipse Width="84" Height="84" Stroke="#FFFF5AA0" StrokeThickness="7" HorizontalAlignment="Center"/>
+                    <Ellipse Width="50" Height="50" Stroke="#FFAA5AE6" StrokeThickness="5" HorizontalAlignment="Center"/>
+                    <Ellipse Width="6" Height="6" Fill="White" Margin="30,20,0,0"/>
+                    <Ellipse Width="4" Height="4" Fill="White" Margin="0,0,40,30"/>
+                    <Ellipse Width="5" Height="5" Fill="White" Margin="80,0,0,24"/>
+                    <Path x:Name="CheckPortal" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
+                          Data="M0,5 L4,9 L11,0" Stroke="White" StrokeThickness="2.4"/>
+                  </Grid>
+                </Border>
+                <StackPanel Margin="14,10,14,14">
+                  <TextBlock Text="Portal" FontSize="14.5" FontWeight="SemiBold"/>
+                  <TextBlock Text="Through the cosmos" Foreground="{StaticResource TextSecondary}" FontSize="12"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+
+            <!-- Comet -->
+            <Border x:Name="CardComet" Margin="10,0,0,0" CornerRadius="16" Background="{StaticResource CardBg}"
+                    BorderBrush="{StaticResource CardBorder}" BorderThickness="2" Cursor="Hand" MouseLeftButtonUp="OnPickComet">
+              <StackPanel>
+                <Border CornerRadius="14,14,0,0" Height="118" ClipToBounds="True" Background="#FF0E1226">
+                  <Grid>
+                    <Rectangle Width="150" Height="26" RadiusX="13" RadiusY="13"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+                      <Rectangle.RenderTransform><RotateTransform Angle="-28"/></Rectangle.RenderTransform>
+                      <Rectangle.Effect><BlurEffect Radius="12"/></Rectangle.Effect>
+                      <Rectangle.Fill>
+                        <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
+                          <GradientStop Color="#00FF9646" Offset="0"/>
+                          <GradientStop Color="#FFFF6AA6" Offset="1"/>
+                        </LinearGradientBrush>
+                      </Rectangle.Fill>
+                    </Rectangle>
+                    <Border Width="50" Height="64" CornerRadius="7" Background="White" Opacity="0.95"
+                            HorizontalAlignment="Center" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+                      <Border.RenderTransform><RotateTransform Angle="-8"/></Border.RenderTransform>
+                    </Border>
+                    <Path x:Name="CheckComet" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
+                          Data="M0,5 L4,9 L11,0" Stroke="White" StrokeThickness="2.4"/>
+                  </Grid>
+                </Border>
+                <StackPanel Margin="14,10,14,14">
+                  <TextBlock Text="Comet" FontSize="14.5" FontWeight="SemiBold"/>
+                  <TextBlock Text="Streaks in with a tail" Foreground="{StaticResource TextSecondary}" FontSize="12"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </UniformGrid>
+
+          <Button x:Name="TestButton" Style="{StaticResource PillButton}" Content="Test effect"
+                  HorizontalAlignment="Left" Margin="0,22,0,0" Click="OnTestClick"/>
+        </StackPanel>
+      </ScrollViewer>
+
+      <!-- DELIVERY PANEL -->
+      <ScrollViewer x:Name="PanelDelivery" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="30,18,30,30">
+          <TextBlock Text="Delivery" FontSize="22" FontWeight="Bold"/>
+          <TextBlock Text="Where photos are saved and how arrivals feel."
+                     Foreground="{StaticResource TextSecondary}" FontSize="13" Margin="0,4,0,18"/>
+
+          <Border Background="{StaticResource CardBg}" CornerRadius="16" BorderBrush="{StaticResource CardBorder}" BorderThickness="1" Padding="20">
+            <StackPanel>
+              <TextBlock Text="Save folder" FontSize="14" FontWeight="SemiBold"/>
+              <TextBlock x:Name="SaveFolderText" Text="" Foreground="{StaticResource TextSecondary}" FontSize="12.5"
+                         Margin="0,4,0,12" TextWrapping="Wrap" FontFamily="Consolas, Segoe UI"/>
+              <StackPanel Orientation="Horizontal">
+                <Button Content="Change…" Style="{StaticResource GhostButton}" Click="OnChangeFolder" Margin="0,0,10,0"/>
+                <Button Content="Open folder" Style="{StaticResource GhostButton}" Click="OnOpenFolder"/>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <Border Background="{StaticResource CardBg}" CornerRadius="16" BorderBrush="{StaticResource CardBorder}" BorderThickness="1" Padding="20" Margin="0,14,0,0">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <StackPanel Grid.Column="0">
+                <TextBlock Text="Play sound" FontSize="14" FontWeight="SemiBold"/>
+                <TextBlock Text="A soft whoosh as each photo lands." Foreground="{StaticResource TextSecondary}" FontSize="12.5" Margin="0,3,0,0"/>
+              </StackPanel>
+              <CheckBox x:Name="SoundToggle" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center"
+                        Checked="OnSoundChanged" Unchecked="OnSoundChanged"/>
+            </Grid>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+
+    </Grid>
+  </Grid>
+</Window>

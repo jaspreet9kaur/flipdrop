@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="../tests/FlipDrop.Tests/FlipDrop.Tests.csproj" />
+  <Project Path="FlipDrop.App/FlipDrop.App.csproj" />
+  <Project Path="FlipDrop.Core/FlipDrop.Core.csproj" />
+</Solution>

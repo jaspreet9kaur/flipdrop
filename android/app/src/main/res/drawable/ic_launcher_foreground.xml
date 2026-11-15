@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FlipDrop: a photo flying up from a phone, with a motion trail -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- phone -->
+    <path
+        android:fillColor="#FF2A2550"
+        android:pathData="M38,52 L62,52 Q66,52 66,56 L66,84 Q66,88 62,88 L38,88 Q34,88 34,84 L34,56 Q34,52 38,52 Z" />
+    <!-- trail -->
+    <path
+        android:fillColor="#668E7BFF"
+        android:pathData="M44,56 L56,56 L66,36 L56,36 Z" />
+    <path
+        android:fillColor="#3DFF7BD5"
+        android:pathData="M42,64 L50,64 L60,44 L52,44 Z" />
+    <!-- the photo, tilted, mid-flight -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M58,18 L82,22 L78,46 L54,42 Z" />
+    <path
+        android:fillColor="#FF8E7BFF"
+        android:pathData="M60,21 L79,24 L76,43 L57,40 Z" />
+    <path
+        android:fillColor="#FFFFC874"
+        android:pathData="M69,28 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+    <path
+        android:fillColor="#FF4FD1A8"
+        android:pathData="M57,40 L64,32 L69,37 L72,34 L76,43 Z" />
+</vector>
