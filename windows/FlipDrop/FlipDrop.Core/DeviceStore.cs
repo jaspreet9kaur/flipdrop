@@ -4,7 +4,11 @@ using System.Text.Json;
 
 namespace FlipDrop.Core;
 
-public sealed record PairedDevice(string DeviceId, string DeviceName, string TokenHashB64, DateTimeOffset PairedAt);
+public sealed record PairedDevice(string DeviceId, string DeviceName, string TokenHashB64, DateTimeOffset PairedAt)
+{
+    /// <summary>Last time this device presented a valid token. Persisted at most once per minute per device.</summary>
+    public DateTimeOffset? LastSeenUtc { get; set; }
+}
 
 /// <summary>
 /// Persists paired devices. Only SHA-256(token) is stored, never the token itself.
@@ -46,9 +50,13 @@ public sealed class DeviceStore
         File.WriteAllBytes(_path, Dpapi.Protect(json));
     }
 
+    /// <summary>
+    /// A snapshot of the paired devices. Each element is a copy, so a caller reading a device's mutable
+    /// <see cref="PairedDevice.LastSeenUtc"/> never races <see cref="TryValidateToken"/> mutating the live one.
+    /// </summary>
     public IReadOnlyList<PairedDevice> Devices
     {
-        get { lock (_lock) return _devices.ToList(); }
+        get { lock (_lock) return _devices.Select(d => d with { }).ToList(); }
     }
 
     public void Add(string deviceId, string deviceName, byte[] tokenHash)
@@ -72,6 +80,8 @@ public sealed class DeviceStore
         Changed?.Invoke();
     }
 
+    private static readonly TimeSpan LastSeenThrottle = TimeSpan.FromMinutes(1);
+
     /// <summary>Constant-time check of a presented bearer token against every stored hash.</summary>
     public bool TryValidateToken(string token, out PairedDevice? device)
     {
@@ -86,6 +96,13 @@ public sealed class DeviceStore
                 if (stored.Length == hash.Length && CryptographicOperations.FixedTimeEquals(stored, hash))
                 {
                     device = d;
+                    // Record LastSeen, persisting at most once per minute per device.
+                    var now = DateTimeOffset.UtcNow;
+                    if (d.LastSeenUtc is null || now - d.LastSeenUtc.Value >= LastSeenThrottle)
+                    {
+                        d.LastSeenUtc = now;
+                        try { Save(); } catch { /* non-fatal: LastSeen is best-effort */ }
+                    }
                     return true;
                 }
             }

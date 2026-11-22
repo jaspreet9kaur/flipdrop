@@ -19,6 +19,10 @@ public sealed class PairingService
     public static readonly TimeSpan RotationPeriod = TimeSpan.FromSeconds(120);
     private const int MaxWrongAttempts = 5;
 
+    // Pairing back-off (protocol 5.4): first lockout 30 s, doubling to a 15 min cap, reset on success.
+    private static readonly TimeSpan BaseLockout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MaxLockout = TimeSpan.FromMinutes(15);
+
     private readonly DeviceStore _devices;
     private readonly Lock _lock = new();
     private readonly bool _fixedCode;
@@ -26,8 +30,26 @@ public sealed class PairingService
     private string _code = "";
     private DateTimeOffset _issuedAt;
     private int _wrongAttempts;
+    private int _lockoutCount;
+    private DateTimeOffset? _lockedUntil;
 
     public event Action? CodeChanged;
+
+    /// <summary>Raised when pairing becomes locked out after too many wrong codes.</summary>
+    public event EventHandler<PairingLockedEventArgs>? LockedOut;
+
+    /// <summary>When pairing is currently locked, the time it unlocks; otherwise null.</summary>
+    public DateTimeOffset? LockedUntil
+    {
+        get
+        {
+            lock (_lock)
+            {
+                if (_lockedUntil is DateTimeOffset until && DateTimeOffset.UtcNow < until) return until;
+                return null;
+            }
+        }
+    }
 
     public PairingService(DeviceStore devices)
     {
@@ -82,8 +104,18 @@ public sealed class PairingService
     public PairResult TryPair(string? code, string deviceId, string deviceName, out string? token)
     {
         token = null;
+        TimeSpan? justLockedFor = null;
+        PairResult result;
         lock (_lock)
         {
+            // While locked, refuse everything (even a correct code) without counting attempts.
+            if (_lockedUntil is DateTimeOffset until)
+            {
+                if (DateTimeOffset.UtcNow < until) return PairResult.Locked;
+                _lockedUntil = null; // lock expired
+                _wrongAttempts = 0;
+            }
+
             MaybeRotate();
 
             var expected = Encoding.UTF8.GetBytes(_code);
@@ -95,19 +127,46 @@ public sealed class PairingService
                 _wrongAttempts++;
                 if (_wrongAttempts >= MaxWrongAttempts)
                 {
+                    var lockFor = NextLockout();
+                    _lockoutCount++;
+                    _lockedUntil = DateTimeOffset.UtcNow + lockFor;
+                    _wrongAttempts = 0;
                     RotateLocked(); // burn the code so a brute-force run can't continue
-                    return PairResult.Locked;
+                    justLockedFor = lockFor;
+                    result = PairResult.Locked;
                 }
-                return PairResult.BadCode;
+                else
+                {
+                    result = PairResult.BadCode;
+                }
             }
-
-            var tok = GenerateToken();
-            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(tok));
-            _devices.Add(deviceId, string.IsNullOrWhiteSpace(deviceName) ? "Unknown device" : deviceName, hash);
-            token = tok;
-            RotateLocked(); // fresh code after a successful pairing
-            return PairResult.Ok;
+            else
+            {
+                var tok = GenerateToken();
+                var hash = SHA256.HashData(Encoding.UTF8.GetBytes(tok));
+                _devices.Add(deviceId, string.IsNullOrWhiteSpace(deviceName) ? "Unknown device" : deviceName, hash);
+                token = tok;
+                // Successful pairing resets the back-off and rotates the code.
+                _lockoutCount = 0;
+                _lockedUntil = null;
+                RotateLocked();
+                result = PairResult.Ok;
+            }
         }
+
+        // Fire outside the lock so a handler can't deadlock us.
+        if (justLockedFor is TimeSpan d)
+            LockedOut?.Invoke(this, new PairingLockedEventArgs { LockedFor = d });
+
+        return result;
+    }
+
+    /// <summary>Back-off duration for the next lockout: 30 s doubling each time, capped at 15 min.</summary>
+    private TimeSpan NextLockout()
+    {
+        var secs = BaseLockout.TotalSeconds * Math.Pow(2, _lockoutCount);
+        if (secs > MaxLockout.TotalSeconds) secs = MaxLockout.TotalSeconds;
+        return TimeSpan.FromSeconds(secs);
     }
 
     private void MaybeRotate()
