@@ -12,12 +12,23 @@ internal static class Whoosh
 {
     private static readonly byte[] WavBytes = Render();
 
+    // One long-lived player, reused for every whoosh. SoundPlayer.Play() runs async on a worker
+    // thread, so a per-call local player can be collected (and its backing stream closed) before
+    // playback finishes, truncating the sound. A static instance stays alive for the app's lifetime.
+    private static readonly SoundPlayer Player = CreatePlayer();
+
+    private static SoundPlayer CreatePlayer()
+    {
+        var p = new SoundPlayer(new MemoryStream(WavBytes, writable: false));
+        try { p.Load(); } catch { /* audio is optional */ }
+        return p;
+    }
+
     public static void Play()
     {
         try
         {
-            var player = new SoundPlayer(new MemoryStream(WavBytes, writable: false));
-            player.Play(); // async on a worker thread
+            Player.Play(); // async on a worker thread; reuses the preloaded buffer
         }
         catch { /* audio is optional */ }
     }

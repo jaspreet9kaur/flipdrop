@@ -38,6 +38,7 @@ public sealed class FlipDropServer : IAsyncDisposable
     private readonly DeviceStore _devices;
     private readonly Func<string> _saveFolder;
     private readonly SemaphoreSlim _uploadGate = new(3, 3);   // at most 3 uploads writing at once
+    private long _reservedBytes;                              // sum of in-flight Content-Lengths (free-space reservation)
     private WebApplication? _app;
 
     public event EventHandler<TransferStartedEventArgs>? TransferStarted;
@@ -182,183 +183,248 @@ public sealed class FlipDropServer : IAsyncDisposable
         var folder = _saveFolder();
         try { Directory.CreateDirectory(folder); } catch { /* reported later if the write fails */ }
 
-        // Free-space check (v2): keep at least 512 MiB free on the save drive after the file.
-        if (v2 && declared is long want)
-        {
-            try
-            {
-                var root = Path.GetPathRoot(Path.GetFullPath(folder));
-                if (!string.IsNullOrEmpty(root))
-                {
-                    var drive = new DriveInfo(root);
-                    if (drive.IsReady && drive.AvailableFreeSpace - want < FreeSpaceReserve)
-                    {
-                        await Json(ctx, 507, new { error = "disk_full" });
-                        return;
-                    }
-                }
-            }
-            catch { /* can't determine free space — don't block the transfer */ }
-        }
-
-        // Concurrency gate: wait up to 30 s for a slot, then 503.
-        bool acquired;
-        try { acquired = await _uploadGate.WaitAsync(TimeSpan.FromSeconds(30), ctx.RequestAborted); }
-        catch (OperationCanceledException) { return; }
-        if (!acquired)
-        {
-            ctx.Response.Headers.RetryAfter = "2";
-            await Json(ctx, 503, new { error = "busy" });
-            return;
-        }
-
-        var transferId = Guid.NewGuid();
-        var deviceName = device?.DeviceName ?? "Device";
-        var flingX = ParseDouble(ctx.Request.Headers["X-Fling-X"]);
-        var flingV = ParseDouble(ctx.Request.Headers["X-Fling-Velocity"]);
-        var total = declared ?? -1;
-
-        var incoming = Path.Combine(folder, ".flipdrop-incoming");
-        var partPath = Path.Combine(incoming, transferId.ToString("N") + ".part");
-
-        var head = new byte[64];
-        var headLen = 0;
-        long received = 0;
-        var started = false;
-        var reject415 = false;
-        string stem = "", ext = "bin";
-        var kind = FileKind.Other;
-        var risky = false;
-        long lastProgressTick = 0;
-
+        long reservedBytes = 0; // non-zero while this upload holds a slice of the free-space reserve
+        bool acquired = false;
         try
         {
-            EnsureIncomingDir(incoming);
-
-            await using (var fs = new FileStream(partPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                             StreamBuffer, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // Free-space check (v2): keep at least 512 MiB free on the save drive after the file.
+            // Reserve this request's Content-Length so concurrent uploads can't jointly eat the reserve:
+            // the check accounts for the sum of all in-flight declared sizes, not just this one.
+            if (v2 && declared is long want)
             {
-                var buffer = new byte[StreamBuffer];
-                int read;
-                while ((read = await ctx.Request.Body.ReadAsync(buffer, ctx.RequestAborted)) > 0)
+                reservedBytes = want;
+                var inFlight = Interlocked.Add(ref _reservedBytes, want);
+                try
                 {
-                    if (headLen < head.Length)
+                    var root = Path.GetPathRoot(Path.GetFullPath(folder));
+                    if (!string.IsNullOrEmpty(root))
                     {
-                        var c = Math.Min(head.Length - headLen, read);
-                        Array.Copy(buffer, 0, head, headLen, c);
-                        headLen += c;
-                    }
-
-                    await fs.WriteAsync(buffer.AsMemory(0, read), ctx.RequestAborted);
-                    received += read;
-
-                    if (!started)
-                    {
-                        if (!ResolveType(ctx, v2, head.AsSpan(0, headLen), out stem, out ext, out kind, out risky))
+                        var drive = new DriveInfo(root);
+                        if (drive.IsReady && drive.AvailableFreeSpace - inFlight < FreeSpaceReserve)
                         {
-                            reject415 = true;
-                            break;
+                            await Json(ctx, 507, new { error = "disk_full" });
+                            return;
                         }
-                        RaiseStarted(transferId, stem, ext, kind, total, deviceName, flingX, flingV);
-                        started = true;
-                    }
-
-                    var nowTick = Environment.TickCount64;
-                    if (nowTick - lastProgressTick >= 200) // <= 5 events/second per transfer
-                    {
-                        lastProgressTick = nowTick;
-                        TransferProgress?.Invoke(this, new TransferProgressEventArgs
-                        {
-                            TransferId = transferId,
-                            BytesReceived = received,
-                            TotalBytes = total < 0 ? received : total
-                        });
                     }
                 }
+                catch { /* can't determine free space — don't block the transfer */ }
             }
 
-            if (reject415)
+            // Concurrency gate: wait up to 30 s for a slot, then 503.
+            try { acquired = await _uploadGate.WaitAsync(TimeSpan.FromSeconds(30), ctx.RequestAborted); }
+            catch (OperationCanceledException) { return; }
+            if (!acquired)
             {
-                TryDeleteFile(partPath);
-                await Json(ctx, 415, new { error = "unsupported_media_type" });
+                ctx.Response.Headers.RetryAfter = "2";
+                await Json(ctx, 503, new { error = "busy" });
                 return;
             }
 
-            // Empty / unannounced transfer (e.g. a zero-byte file): announce before FileReceived.
-            if (!started)
+            var transferId = Guid.NewGuid();
+            var deviceName = device?.DeviceName ?? "Device";
+            var flingX = ParseDouble(ctx.Request.Headers["X-Fling-X"]);
+            var flingV = ParseDouble(ctx.Request.Headers["X-Fling-Velocity"]);
+            var total = declared ?? -1;
+
+            var incoming = Path.Combine(folder, ".flipdrop-incoming");
+            var partPath = Path.Combine(incoming, transferId.ToString("N") + ".part");
+
+            var head = new byte[64];
+            var headLen = 0;
+            long received = 0;
+            var started = false;    // TransferStarted raised (type resolved)
+            var completed = false;  // FileReceived raised: the one terminal event has fired
+            var reject415 = false;
+            string stem = "", ext = "bin";
+            var kind = FileKind.Other;
+            var risky = false;
+            long lastProgressTick = 0;
+            var writing = false;    // true only while inside fs.WriteAsync (to classify IOExceptions)
+
+            try
             {
-                if (!ResolveType(ctx, v2, head.AsSpan(0, headLen), out stem, out ext, out kind, out risky))
+                EnsureIncomingDir(incoming);
+
+                await using (var fs = new FileStream(partPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                                 StreamBuffer, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                {
+                    var buffer = new byte[StreamBuffer];
+                    int read;
+                    while ((read = await ctx.Request.Body.ReadAsync(buffer, ctx.RequestAborted)) > 0)
+                    {
+                        // Keep accumulating the 64-byte head across chunks; the type is resolved only once
+                        // the whole head is in hand (or, for a short body, after the loop). This avoids
+                        // sniffing a partial head when the first read is tiny (which wrongly rejected v1
+                        // JPEGs whose first chunk was shorter than the signature).
+                        if (headLen < head.Length)
+                        {
+                            var c = Math.Min(head.Length - headLen, read);
+                            Array.Copy(buffer, 0, head, headLen, c);
+                            headLen += c;
+                        }
+
+                        writing = true;
+                        await fs.WriteAsync(buffer.AsMemory(0, read), ctx.RequestAborted);
+                        writing = false;
+                        received += read;
+
+                        if (!started && headLen >= head.Length)
+                        {
+                            if (!ResolveType(ctx, v2, head.AsSpan(0, headLen), out stem, out ext, out kind, out risky))
+                            {
+                                reject415 = true;
+                                break;
+                            }
+                            RaiseStarted(transferId, stem, ext, kind, total, deviceName, flingX, flingV);
+                            started = true;
+                        }
+
+                        if (started)
+                        {
+                            var nowTick = Environment.TickCount64;
+                            if (nowTick - lastProgressTick >= 200) // <= 5 events/second per transfer
+                            {
+                                lastProgressTick = nowTick;
+                                TransferProgress?.Invoke(this, new TransferProgressEventArgs
+                                {
+                                    TransferId = transferId,
+                                    BytesReceived = received,
+                                    TotalBytes = total < 0 ? received : total
+                                });
+                            }
+                        }
+                    }
+
+                    // Flush buffered bytes here (not on an implicit dispose) so a disk-full surfaces as a
+                    // write IOException we can turn into 507 rather than a generic error at block exit.
+                    if (!reject415)
+                    {
+                        writing = true;
+                        await fs.FlushAsync(ctx.RequestAborted);
+                        writing = false;
+                    }
+                }
+
+                if (reject415)
                 {
                     TryDeleteFile(partPath);
                     await Json(ctx, 415, new { error = "unsupported_media_type" });
                     return;
                 }
-                RaiseStarted(transferId, stem, ext, kind, total, deviceName, flingX, flingV);
-                started = true;
-            }
 
-            // Body must be exactly as long as declared (v2 always declares a length).
-            if (declared is long expect && received != expect)
+                // Short body or body <= 64 bytes: the head was never full, so resolve it now,
+                // announcing (TransferStarted) before the terminal event.
+                if (!started)
+                {
+                    if (!ResolveType(ctx, v2, head.AsSpan(0, headLen), out stem, out ext, out kind, out risky))
+                    {
+                        TryDeleteFile(partPath);
+                        await Json(ctx, 415, new { error = "unsupported_media_type" });
+                        return;
+                    }
+                    RaiseStarted(transferId, stem, ext, kind, total, deviceName, flingX, flingV);
+                    started = true;
+                }
+
+                // Body must be exactly as long as declared (v2 always declares a length).
+                if (declared is long expect && received != expect)
+                {
+                    TryDeleteFile(partPath);
+                    TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = "incomplete" });
+                    await Json(ctx, 400, new { error = "incomplete" });
+                    return;
+                }
+
+                var (fileName, fullPath) = MoveUnique(partPath, folder, stem, ext);
+                WriteMarkOfTheWeb(fullPath);
+
+                // The file is saved: this is the single terminal event. Any later failure (e.g. writing
+                // the response to a client that has already disconnected) must NOT also raise TransferFailed.
+                completed = true;
+                FileReceived?.Invoke(this, new FileReceivedEventArgs
+                {
+                    TransferId = transferId,
+                    FilePath = fullPath,
+                    FileName = fileName,
+                    Kind = kind,
+                    SizeBytes = received,
+                    IsRisky = risky,
+                    DeviceName = deviceName,
+                    FlingX = flingX,
+                    FlingVelocity = flingV
+                });
+
+                try
+                {
+                    if (v2)
+                        await Json(ctx, 200, new { saved = fileName, kind = KindString(kind), size = received });
+                    else
+                        await Json(ctx, 200, new { saved = fileName });
+                }
+                catch { /* file is saved; failing to write the 200 to a vanished client is still success */ }
+            }
+            catch when (completed)
+            {
+                // File already saved and FileReceived already raised (e.g. a subscriber threw). The transfer
+                // succeeded; swallow so no second terminal event fires and no error status overrides the 200.
+            }
+            catch (BadHttpRequestException bhr) when (!completed)
             {
                 TryDeleteFile(partPath);
-                TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = "incomplete" });
-                await Json(ctx, 400, new { error = "incomplete" });
-                return;
+                if (started)
+                    TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = "incomplete" });
+                if (!ctx.Response.HasStarted)
+                {
+                    if (bhr.StatusCode == StatusCodes.Status413PayloadTooLarge)
+                        await Json(ctx, 413, new { error = "too_large" });
+                    else
+                        await Json(ctx, 400, new { error = "incomplete" });
+                }
             }
-
-            var (fileName, fullPath) = MoveUnique(partPath, folder, stem, ext);
-            WriteMarkOfTheWeb(fullPath);
-
-            FileReceived?.Invoke(this, new FileReceivedEventArgs
+            catch (OperationCanceledException) when (!completed)
             {
-                TransferId = transferId,
-                FilePath = fullPath,
-                FileName = fileName,
-                Kind = kind,
-                SizeBytes = received,
-                IsRisky = risky,
-                DeviceName = deviceName,
-                FlingX = flingX,
-                FlingVelocity = flingV
-            });
-
-            if (v2)
-                await Json(ctx, 200, new { saved = fileName, kind = KindString(kind), size = received });
-            else
-                await Json(ctx, 200, new { saved = fileName });
-        }
-        catch (BadHttpRequestException bhr)
-        {
-            TryDeleteFile(partPath);
-            if (started)
-                TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = "incomplete" });
-            if (!ctx.Response.HasStarted)
-            {
-                if (bhr.StatusCode == StatusCodes.Status413PayloadTooLarge)
-                    await Json(ctx, 413, new { error = "too_large" });
-                else
-                    await Json(ctx, 400, new { error = "incomplete" });
+                TryDeleteFile(partPath);
+                if (started)
+                    TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = "aborted" });
+                // The client is gone; there is nothing to respond to.
             }
-        }
-        catch (OperationCanceledException)
-        {
-            TryDeleteFile(partPath);
-            if (started)
-                TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = "aborted" });
-            // The client is gone; there is nothing to respond to.
-        }
-        catch (Exception)
-        {
-            TryDeleteFile(partPath);
-            if (started)
-                TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = "error" });
-            if (!ctx.Response.HasStarted)
-                await Json(ctx, 500, new { error = "error" });
+            catch (IOException ioe) when (!completed && writing)
+            {
+                // A disk error while writing the part file (full disk, I/O failure). Distinct from a
+                // connection fault reading the body, which surfaces as BadHttpRequest/OperationCanceled above.
+                TryDeleteFile(partPath);
+                var diskFull = IsDiskFull(ioe);
+                if (started)
+                    TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = diskFull ? "disk_full" : "write_failed" });
+                if (!ctx.Response.HasStarted)
+                {
+                    if (diskFull)
+                        await Json(ctx, 507, new { error = "disk_full" });
+                    else
+                        await Json(ctx, 500, new { error = "write_failed" });
+                }
+            }
+            catch (Exception) when (!completed)
+            {
+                TryDeleteFile(partPath);
+                if (started)
+                    TransferFailed?.Invoke(this, new TransferFailedEventArgs { TransferId = transferId, Reason = "error" });
+                if (!ctx.Response.HasStarted)
+                    await Json(ctx, 500, new { error = "error" });
+            }
         }
         finally
         {
-            _uploadGate.Release();
+            if (acquired) _uploadGate.Release();
+            if (reservedBytes != 0) Interlocked.Add(ref _reservedBytes, -reservedBytes);
         }
+    }
+
+    // ERROR_DISK_FULL (0x70) and ERROR_HANDLE_DISK_FULL (0x27) surface as these HRESULTs on Windows.
+    private static bool IsDiskFull(IOException ex)
+    {
+        var hr = unchecked((uint)ex.HResult);
+        return hr is 0x80070070 or 0x80070027;
     }
 
     // ---- naming / sniffing -------------------------------------------------
@@ -425,17 +491,57 @@ public sealed class FlipDropServer : IAsyncDisposable
     private static string SanitizeStem(string raw)
     {
         var sb = new StringBuilder(raw.Length);
-        foreach (var ch in raw)
+        for (var i = 0; i < raw.Length; i++)
         {
-            if (ch < 0x20) continue; // control characters
+            var ch = raw[i];
+
+            // Keep a valid surrogate pair as a unit (and drop it if its code point is a disallowed category);
+            // drop any unpaired surrogate on its own.
+            if (char.IsHighSurrogate(ch) && i + 1 < raw.Length && char.IsLowSurrogate(raw[i + 1]))
+            {
+                if (!IsDisallowedCategory(CharUnicodeInfo.GetUnicodeCategory(raw, i)))
+                {
+                    sb.Append(ch);
+                    sb.Append(raw[i + 1]);
+                }
+                i++; // consumed the low surrogate too
+                continue;
+            }
+            if (char.IsSurrogate(ch)) continue; // unpaired surrogate
+
             if (ch is '<' or '>' or ':' or '"' or '/' or '\\' or '|' or '?' or '*') continue;
+            // Drop control, format (bidi / RTLO U+202E etc.) and line/paragraph separators.
+            if (IsDisallowedCategory(CharUnicodeInfo.GetUnicodeCategory(ch))) continue;
             sb.Append(ch);
         }
         var s = sb.ToString().Trim(' ', '.');
-        if (s.Length > 100) s = s[..100];
+        s = TruncateTextElements(s, 100);
         s = s.Trim(' ', '.');
         if (IsReservedDeviceName(s)) s = "_" + s;
         return s;
+    }
+
+    private static bool IsDisallowedCategory(UnicodeCategory cat) => cat
+        is UnicodeCategory.Control
+        or UnicodeCategory.Format
+        or UnicodeCategory.LineSeparator
+        or UnicodeCategory.ParagraphSeparator
+        or UnicodeCategory.Surrogate; // unpaired surrogate code point
+
+    /// <summary>Truncates to at most <paramref name="maxChars"/> UTF-16 code units on a text-element
+    /// boundary, so a surrogate pair or combining sequence is never split.</summary>
+    private static string TruncateTextElements(string s, int maxChars)
+    {
+        if (s.Length <= maxChars) return s;
+        var e = StringInfo.GetTextElementEnumerator(s);
+        var count = 0;
+        while (e.MoveNext())
+        {
+            var element = (string)e.Current;
+            if (count + element.Length > maxChars) break;
+            count += element.Length;
+        }
+        return s[..count];
     }
 
     private static bool IsReservedDeviceName(string s)

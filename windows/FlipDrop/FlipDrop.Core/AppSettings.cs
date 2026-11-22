@@ -43,7 +43,14 @@ public sealed class AppSettings
         try
         {
             AppPaths.EnsureDataDir();
-            File.WriteAllText(AppPaths.SettingsFile, JsonSerializer.Serialize(this, Opts));
+            // Write atomically: a crash mid-write must never truncate the existing settings.json.
+            var path = AppPaths.SettingsFile;
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(this, Opts));
+            if (File.Exists(path))
+                File.Replace(tmp, path, null);
+            else
+                File.Move(tmp, path);
         }
         catch { /* non-fatal */ }
     }

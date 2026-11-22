@@ -161,9 +161,9 @@ private fun ShareFlow(uris: List<Uri>, pcName: String, onFinish: () -> Unit, mod
 
     fun confirm() {
         if (sending) return
-        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-        ids = TransferQueue.enqueue(ctx, uris, 1600f, 0.5f)
         sending = true
+        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        scope.launch(Dispatchers.IO) { ids = TransferQueue.enqueue(ctx, uris, 1600f, 0.5f) }
     }
 
     val allDone = sending && mine.isNotEmpty() && mine.all { it.state == TransferQueue.State.DONE }

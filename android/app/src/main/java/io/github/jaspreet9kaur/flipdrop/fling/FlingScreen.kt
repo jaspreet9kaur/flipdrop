@@ -169,7 +169,7 @@ fun FlingScreen(onBack: () -> Unit, openPairInitially: Boolean = false) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
-    var paired by remember { mutableStateOf(PairingStore.load(ctx)) }
+    var paired by remember { mutableStateOf<PairingStore.Paired?>(null) }
     var hasPerm by remember { mutableStateOf(MediaRepo.hasAccess(ctx)) }
     var images by remember { mutableStateOf<List<MediaRepo.MediaItem>>(emptyList()) }
     var videos by remember { mutableStateOf<List<MediaRepo.MediaItem>>(emptyList()) }
@@ -195,6 +195,7 @@ fun FlingScreen(onBack: () -> Unit, openPairInitially: Boolean = false) {
     }
 
     LaunchedEffect(Unit) {
+        paired = withContext(Dispatchers.IO) { PairingStore.load(ctx) }
         if (openPairInitially && paired == null) showPair = true
         if (!hasPerm) {
             val extra = if (FlipDropClient.needsLocalNetworkPermission(ctx)) arrayOf(FlipDropClient.LOCAL_NETWORK_PERMISSION) else emptyArray()
@@ -209,7 +210,7 @@ fun FlingScreen(onBack: () -> Unit, openPairInitially: Boolean = false) {
     }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         hasPerm = MediaRepo.hasAccess(ctx)
-        paired = PairingStore.load(ctx)
+        scope.launch(Dispatchers.IO) { paired = PairingStore.load(ctx) }
         reloadKey++
     }
 
@@ -240,7 +241,7 @@ fun FlingScreen(onBack: () -> Unit, openPairInitially: Boolean = false) {
         view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         val vDp = abs(v.y) / density.density
         val xFrac = if (rootSize.width > 0) (center.x / rootSize.width).coerceIn(0f, 1f) else 0.5f
-        TransferQueue.enqueue(ctx, listOf(d.uri), vDp, xFrac)
+        scope.launch(Dispatchers.IO) { TransferQueue.enqueue(ctx, listOf(d.uri), vDp, xFrac) }
         scope.launch {
             val a = Animatable(center, Offset.VectorConverter)
             val target = Offset(center.x + v.x * 0.1f, -rootSize.height * 0.4f)
@@ -352,7 +353,7 @@ fun FlingScreen(onBack: () -> Unit, openPairInitially: Boolean = false) {
                         onToggle = { u -> selected.value = selected.value.toggle(u) },
                         onTapSend = { u ->
                             if (paired == null) showPair = true
-                            else TransferQueue.enqueue(ctx, listOf(u))
+                            else scope.launch(Dispatchers.IO) { TransferQueue.enqueue(ctx, listOf(u)) }
                         },
                         onLiftStart = ::startLift,
                         onDrag = { uptime, inRoot ->
@@ -395,7 +396,8 @@ fun FlingScreen(onBack: () -> Unit, openPairInitially: Boolean = false) {
                 val p = paired
                 if (p == null) { showPair = true; return@FlingPill }
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                TransferQueue.enqueue(ctx, selected.value.toList())
+                val toSend = selected.value.toList()
+                scope.launch(Dispatchers.IO) { TransferQueue.enqueue(ctx, toSend) }
                 selected.value = emptySet()
                 selecting = false
             }

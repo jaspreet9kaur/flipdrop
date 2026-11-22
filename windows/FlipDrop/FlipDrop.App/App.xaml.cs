@@ -36,7 +36,7 @@ public partial class App : System.Windows.Application
 
         AppPaths.EnsureDataDir();
         Settings = AppSettings.Load();
-        History = new HistoryStore(System.IO.Path.Combine(AppPaths.DataDir, "history.json"));
+        History = new HistoryStore(System.IO.Path.Combine(AppPaths.DataDir, "history.json"), () => Settings.SaveFolder);
 
         ThemeManager.Apply(Settings.Theme);
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;

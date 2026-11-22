@@ -179,10 +179,14 @@ try
         t.Check("No file escaped the save folder", noEscape);
     }
 
-    // 10) Oversize body (> 64 MiB) -> rejected (413, or connection refused mid-stream)
+    // 10) Oversize body (> 64 MiB) -> rejected: either a 413 status, or the connection is reset while the
+    //     oversize body is still being sent. Either way the upload must leave NOTHING behind on disk — so the
+    //     "reset" branch no longer passes on its own; it must also prove no file and no .part were written.
     {
         var big = new byte[FlipDropServer.MaxV1Bytes + 1024];
         big[0] = 0xFF; big[1] = 0xD8; big[2] = 0xFF; // JPEG header so only size can reject it
+        int status = -1;
+        bool threw = false;
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, "/v1/photos");
@@ -190,13 +194,21 @@ try
             req.Content = new ByteArrayContent(big);
             req.Content.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
             var r = await http.SendAsync(req);
-            t.Check("Oversize upload rejected (413)", (int)r.StatusCode == 413, $"got {(int)r.StatusCode}");
+            status = (int)r.StatusCode;
         }
-        catch (Exception ex)
+        catch
         {
-            // Kestrel may reset the connection once the limit is hit; that is still a rejection, not an acceptance.
-            t.Check("Oversize upload rejected (connection reset)", true, ex.GetType().Name);
+            // Kestrel reset the connection as it rejected the oversize body — a rejection, not an acceptance.
+            threw = true;
         }
+        await Task.Delay(300); // let the server finish any cleanup
+        var incoming = Path.Combine(saveFolder, ".flipdrop-incoming");
+        int leftover = Directory.Exists(incoming) ? Directory.GetFiles(incoming, "*.part").Length : 0;
+        bool noOversizeSaved = !Directory.EnumerateFiles(saveFolder)
+            .Any(f => new FileInfo(f).Length >= FlipDropServer.MaxV1Bytes);
+        bool rejected = status == 413 || threw;
+        t.Check("Oversize upload rejected (413 or connection reset)", rejected && leftover == 0 && noOversizeSaved,
+            $"status={status} threw={threw} leftover={leftover} oversizeSaved={!noOversizeSaved}");
     }
 
     // 11) Non-private UDP sender is ignored (sanity on the private-IP gate helper)
@@ -346,8 +358,12 @@ try
         var incoming = Path.Combine(saveFolder, ".flipdrop-incoming");
         int leftover = Directory.Exists(incoming) ? Directory.GetFiles(incoming, "*.part").Length : 0;
         bool noSaved = !File.Exists(Path.Combine(saveFolder, "short.bin"));
-        t.Check("Short body rejected as incomplete (400 or reset)", status == 400 || status == 0, $"status={status}");
-        t.Check("Short body saved nothing and left no .part file", leftover == 0 && noSaved, $"leftover={leftover} noSaved={noSaved}");
+        bool cleanedUp = leftover == 0 && noSaved;
+        // A rejection is a clean 400, or a reset (status 0) because the half-closed body is never fully read —
+        // but either outcome must leave nothing on disk, so the cleanup check is ANDed into the rejection.
+        t.Check("Short body rejected as incomplete (400 or reset)", (status == 400 || status == 0) && cleanedUp,
+            $"status={status} leftover={leftover} noSaved={noSaved}");
+        t.Check("Short body saved nothing and left no .part file", cleanedUp, $"leftover={leftover} noSaved={noSaved}");
     }
 
     // 26) Streaming a 300 MB upload does not balloon process memory (server runs in-process)
@@ -393,7 +409,35 @@ try
         t.Check("3 concurrent uploads all saved with distinct names", allOk && distinct && allExist, $"names=[{string.Join(", ", names)}]");
     }
 
-    // 28) Pairing back-off: 5 wrong codes -> 429 + retryAfter; correct code refused while locked
+    // 28) A PE (MZ…) named invoice.pdf, streamed as a 1-byte first piece then the rest (raw TLS with flushes
+    //     between pieces), is still sniffed from the full 64-byte head: saved as .exe, kind "app", flagged risky.
+    //     Regression guard for sniffing only the first short read.
+    {
+        FileReceivedEventArgs? ev = null;
+        void OnReceived(object? _, FileReceivedEventArgs e) => ev = e;
+        server.FileReceived += OnReceived;
+        var (status, saved, kind) = await SendInPieces(fp!, "/v2/files", token, "invoice.pdf", MakePe(), firstPiece: 1, "application/pdf", includeLength: true);
+        server.FileReceived -= OnReceived;
+        t.Check("PE streamed in a 1-byte first piece -> .exe kind=app", status == 200 && kind == "app" && saved.EndsWith(".exe"), $"status={status} kind={kind} saved={saved}");
+        t.Check("Streamed PE saved file exists and flagged risky", File.Exists(Path.Combine(saveFolder, saved)) && ev is { IsRisky: true }, ev is null ? "no event" : $"risky={ev.IsRisky}");
+    }
+
+    // 29) v1 JPEG whose first read is a single byte must still be accepted (200), not wrongly 415'd because the
+    //     magic bytes had not all arrived on the first chunk. Head is accumulated across reads.
+    {
+        var (status, saved, _) = await SendInPieces(fp!, "/v1/photos", token, "snap.jpg", MakeJpeg(), firstPiece: 1, "image/jpeg", includeLength: true);
+        t.Check("v1 JPEG with a 1-byte first chunk -> 200", status == 200 && saved.EndsWith(".jpg"), $"status={status} saved={saved}");
+    }
+
+    // 30) A bidi/RTLO override (U+202E) in X-File-Name is stripped: "Photo<RLO>gpj.exe" with MZ bytes is saved
+    //     as a plain .exe with no U+202E in the name (so the extension can't be visually spoofed).
+    {
+        var (status, saved, kind, _) = await UploadV2(http, token, "Photo‮gpj.exe", MakePe(), "application/octet-stream");
+        bool noRlo = !saved.Contains('‮');
+        t.Check("U+202E stripped from saved name", status == 200 && noRlo && saved == "Photogpj.exe" && kind == "app", $"status={status} saved={saved} kind={kind} noRlo={noRlo}");
+    }
+
+    // 31) Pairing back-off: 5 wrong codes -> 429 + retryAfter; correct code refused while locked
     {
         TimeSpan? lockedFor = null;
         void OnLocked(object? _, PairingLockedEventArgs e) => lockedFor = e.LockedFor;
@@ -477,6 +521,77 @@ static async Task<(int status, string saved, string kind, long size)> UploadV2(
         size = root.GetProperty("size").GetInt64();
     }
     return ((int)r.StatusCode, saved, kind, size);
+}
+
+// Posts a file over a fingerprint-pinned raw TLS socket, writing the body as a small first piece and then
+// the rest, flushing (with a short pause) between them so the server performs more than one body read.
+// This exercises the head-accumulation path (type must be resolved from the whole 64-byte head, not the
+// first short read). Returns the HTTP status and, for a 200, the parsed "saved"/"kind".
+static async Task<(int status, string saved, string kind)> SendInPieces(
+    string fp, string path, string token, string fileName, byte[] body, int firstPiece, string contentType, bool includeLength)
+{
+    using var tcp = new TcpClient();
+    await tcp.ConnectAsync(IPAddress.Loopback, FlipDropServer.HttpsPort);
+    await using var ns = tcp.GetStream();
+    using var ssl = new SslStream(ns, false,
+        (_, c, _, _) => c is not null && Convert.ToHexStringLower(SHA256.HashData(c.GetRawCertData())) == fp);
+    await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = "FlipDrop" });
+
+    var hb = new StringBuilder();
+    hb.Append($"POST {path} HTTP/1.1\r\nHost: flipdrop\r\nAuthorization: Bearer {token}\r\n");
+    hb.Append($"X-File-Name: {Uri.EscapeDataString(fileName)}\r\n");
+    hb.Append($"Content-Type: {contentType}\r\n");
+    if (includeLength) hb.Append($"Content-Length: {body.Length}\r\n");
+    hb.Append("Connection: close\r\n\r\n");
+    await ssl.WriteAsync(Encoding.ASCII.GetBytes(hb.ToString()));
+    await ssl.FlushAsync();
+
+    int sent = 0;
+    firstPiece = Math.Clamp(firstPiece, 1, Math.Max(1, body.Length));
+    while (sent < body.Length)
+    {
+        int take = sent == 0 ? Math.Min(firstPiece, body.Length) : body.Length - sent;
+        await ssl.WriteAsync(body.AsMemory(sent, take));
+        await ssl.FlushAsync();
+        sent += take;
+        if (sent < body.Length) await Task.Delay(60); // encourage a separate server-side read
+    }
+
+    var resp = new StringBuilder();
+    var rbuf = new byte[4096];
+    using var rcts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+    try
+    {
+        int n;
+        while ((n = await ssl.ReadAsync(rbuf, rcts.Token)) > 0) // server closes (Connection: close) -> read to EOF
+            resp.Append(Encoding.ASCII.GetString(rbuf, 0, n));
+    }
+    catch { /* reset after the status line is still a usable response */ }
+
+    var raw = resp.ToString();
+    var m = Regex.Match(raw, @"^HTTP/\d\.\d (\d{3})");
+    int status = m.Success ? int.Parse(m.Groups[1].Value) : 0;
+    string saved = "", kind = "";
+    int sep = raw.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+    if (status == 200 && sep >= 0)
+    {
+        // The body may be chunk-framed (Transfer-Encoding: chunked), so isolate the JSON object itself
+        // rather than parsing the raw body (which would include the chunk-size lines).
+        var bodyText = raw[(sep + 4)..];
+        int lb = bodyText.IndexOf('{'), rb = bodyText.LastIndexOf('}');
+        if (lb >= 0 && rb > lb)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(bodyText[lb..(rb + 1)]);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("saved", out var s)) saved = s.GetString() ?? "";
+                if (root.TryGetProperty("kind", out var k)) kind = k.GetString() ?? "";
+            }
+            catch { /* leave saved/kind empty if the body is not the expected JSON */ }
+        }
+    }
+    return (status, saved, kind);
 }
 
 // Sends a hand-built HTTP request over a fingerprint-pinned TLS socket and returns the status code.

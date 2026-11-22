@@ -12,6 +12,7 @@ import android.provider.MediaStore
 import android.util.LruCache
 import android.util.Size
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -112,14 +113,29 @@ object MediaRepo {
 
 /** Small LRU of decoded thumbnails. Works for both photo and video content URIs. */
 object ThumbCache {
-    private val cache = LruCache<Uri, ImageBitmap>(240)
+    /** Largest thumbnail edge we ever request, so a single bitmap can't blow the budget. */
+    private const val MAX_PX = 512
+
+    /** Cap the cache at 1/8 of the heap, measured in bytes (not entry count). */
+    private val maxBytes: Int =
+        (Runtime.getRuntime().maxMemory() / 8)
+            .coerceIn(4L * 1024 * 1024, Int.MAX_VALUE.toLong())
+            .toInt()
+
+    private val cache = object : LruCache<Uri, ImageBitmap>(maxBytes) {
+        override fun sizeOf(key: Uri, value: ImageBitmap): Int =
+            runCatching { value.asAndroidBitmap().allocationByteCount }
+                .getOrDefault(value.width * value.height * 4)
+                .coerceAtLeast(1)
+    }
 
     fun peek(uri: Uri): ImageBitmap? = cache.get(uri)
 
     suspend fun load(ctx: Context, uri: Uri, px: Int = 360): ImageBitmap? {
         cache.get(uri)?.let { return it }
+        val edge = px.coerceIn(1, MAX_PX)
         return withContext(Dispatchers.IO) {
-            runCatching { ctx.contentResolver.loadThumbnail(uri, Size(px, px), null).asImageBitmap() }
+            runCatching { ctx.contentResolver.loadThumbnail(uri, Size(edge, edge), null).asImageBitmap() }
                 .getOrNull()
                 ?.also { cache.put(uri, it) }
         }

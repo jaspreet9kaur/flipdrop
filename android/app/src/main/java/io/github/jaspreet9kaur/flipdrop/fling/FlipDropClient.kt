@@ -5,7 +5,10 @@ import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -175,11 +178,14 @@ object FlipDropClient {
         var temp: File? = null
         val size: Long
         val opener: () -> InputStream
-        if (meta.size in 0..MAX_FILE_BYTES) {
+        if (meta.size in 0..MAX_FILE_BYTES && isTrustedSizeProvider(uri)) {
+            // MediaStore / local document providers report an exact, stable size we can trust.
             size = meta.size
             opener = { app.contentResolver.openInputStream(uri) ?: throw FlipDropException("Couldn't read that file") }
         } else {
-            // Size unknown (-1): spool to cache so Content-Length is exact, then stream from there.
+            // Size unknown (-1), or a provider whose advertised size we can't trust (e.g. a cloud
+            // document provider that streams on demand): spool to cache so the Content-Length is
+            // the real byte count and the bytes can't shift under us between sizing and streaming.
             val t = spool(app, uri)
             temp = t
             size = t.length()
@@ -192,11 +198,28 @@ object FlipDropClient {
                 if (e is SSLHandshakeException) throw FlipDropException("Your PC's identity changed. Pair again for safety.")
                 val updated = reconnect(app, paired)
                     ?: throw FlipDropException("Can't reach ${paired.name}. Is FlipDrop running on your PC?")
-                streamUpload(updated, meta, size, opener, velocityDp, xFraction, onProgress)
+                // The retry runs outside the first IOException handler, so map its failures to
+                // friendly messages too instead of leaking a raw Java exception to the user.
+                try {
+                    streamUpload(updated, meta, size, opener, velocityDp, xFraction, onProgress)
+                } catch (e2: IOException) {
+                    if (e2 is SSLHandshakeException) throw FlipDropException("Your PC's identity changed. Pair again for safety.")
+                    throw FlipDropException("Can't reach ${updated.name}. Is FlipDrop running on your PC?")
+                }
             }
         } finally {
             temp?.delete()
         }
+    }
+
+    /**
+     * True when the provider gives a size we can rely on as an exact, stable Content-Length:
+     * MediaStore (`media`) and the on-device document providers (`com.android.providers.*`).
+     * Everything else (cloud/third-party providers) is spooled first.
+     */
+    private fun isTrustedSizeProvider(uri: Uri): Boolean {
+        val a = uri.authority ?: return false
+        return a == "media" || a.startsWith("com.android.providers.")
     }
 
     /** Kept for callers that only need the saved name; delegates to [sendFile]. */
@@ -213,7 +236,7 @@ object FlipDropClient {
     // --- internals -----------------------------------------------------------------------------
 
     /** POSTs to /v2/files, honouring 503 back-off and falling back to /v1/photos on 404. */
-    private fun streamUpload(
+    private suspend fun streamUpload(
         p: PairingStore.Paired,
         meta: FileInfo.Meta,
         size: Long,
@@ -231,7 +254,10 @@ object FlipDropClient {
             c.readTimeout = 120_000
             c.setRequestProperty("Authorization", "Bearer ${p.token}")
             c.setRequestProperty("Content-Type", meta.mime ?: "application/octet-stream")
-            c.setRequestProperty("X-File-Name", URLEncoder.encode(meta.name.take(255), "UTF-8"))
+            c.setRequestProperty("X-File-Name", encodeFileNameHeader(meta.name.take(255)))
+            // Ask the PC to answer before we stream the body: a busy PC can return 503 off the
+            // headers, so we don't push the whole file only to be told to back off.
+            c.setRequestProperty("Expect", "100-continue")
             c.setRequestProperty("X-Fling-Velocity", "%.1f".format(java.util.Locale.US, velocity))
             c.setRequestProperty("X-Fling-X", "%.3f".format(java.util.Locale.US, x.coerceIn(0f, 1f)))
             c.setFixedLengthStreamingMode(size)
@@ -241,6 +267,11 @@ object FlipDropClient {
                 c.responseCode
             } catch (e: IOException) {
                 // Couldn't reach the PC / write the body: let the caller rediscover and retry.
+                runCatching { c.disconnect() }
+                throw e
+            } catch (e: Throwable) {
+                // Size mismatch (file changed) or cancellation: tidy up and propagate as-is, so
+                // these never get routed into reconnect/rediscovery.
                 runCatching { c.disconnect() }
                 throw e
             }
@@ -255,9 +286,11 @@ object FlipDropClient {
                 503 -> {
                     val retryAfter = c.getHeaderFieldInt("Retry-After", 2).coerceIn(0, 5)
                     drain(c)
-                    if (attempt >= 3) throw FlipDropException("Your PC is busy. Please try again in a moment.")
+                    // Re-send the body at most once; the file was streamed, so repeated re-sends are
+                    // expensive. A coroutine delay (not Thread.sleep) keeps the IO thread free.
+                    if (attempt >= 1) throw FlipDropException("Your PC is busy. Please try again in a moment.")
                     attempt++
-                    if (retryAfter > 0) Thread.sleep(retryAfter * 1000L)
+                    if (retryAfter > 0) delay(retryAfter * 1000L)
                     // loop: open a fresh connection (the socket is back in the pool).
                 }
                 404 -> { drain(c); return fallbackPhoto(p, meta, size, opener, velocity, x, onProgress) }
@@ -267,7 +300,7 @@ object FlipDropClient {
     }
 
     /** v1 image path, used when the PC runs FlipDrop 1.0 (no /v2/files). Same streaming code. */
-    private fun fallbackPhoto(
+    private suspend fun fallbackPhoto(
         p: PairingStore.Paired,
         meta: FileInfo.Meta,
         size: Long,
@@ -287,7 +320,7 @@ object FlipDropClient {
         c.readTimeout = 120_000
         c.setRequestProperty("Authorization", "Bearer ${p.token}")
         c.setRequestProperty("Content-Type", mime)
-        c.setRequestProperty("X-File-Name", URLEncoder.encode(meta.name.take(255), "UTF-8"))
+        c.setRequestProperty("X-File-Name", encodeFileNameHeader(meta.name.take(255)))
         c.setRequestProperty("X-Fling-Velocity", "%.1f".format(java.util.Locale.US, velocity))
         c.setRequestProperty("X-Fling-X", "%.3f".format(java.util.Locale.US, x.coerceIn(0f, 1f)))
         c.setFixedLengthStreamingMode(size)
@@ -296,6 +329,9 @@ object FlipDropClient {
             pump(opener, c, size, onProgress)
             c.responseCode
         } catch (e: IOException) {
+            runCatching { c.disconnect() }
+            throw e
+        } catch (e: Throwable) {
             runCatching { c.disconnect() }
             throw e
         }
@@ -323,8 +359,15 @@ object FlipDropClient {
         )
     }
 
-    /** Streams [opener] into the request body in 256 KiB chunks, reporting at most every 100 ms. */
-    private fun pump(opener: () -> InputStream, c: HttpsURLConnection, total: Long, onProgress: (Long, Long) -> Unit) {
+    /**
+     * Streams [opener] into the request body in 256 KiB chunks, reporting at most every 100 ms.
+     * The bytes actually read are counted and compared with [total] (the declared Content-Length):
+     * if the source grows or shrinks mid-send (a provider changed the file under us), the transfer
+     * is failed with a clear message rather than left to the fixed-length stream to abort with a
+     * raw IOException that would be mistaken for a lost connection. Checks for cancellation every
+     * chunk so an in-flight send stops promptly.
+     */
+    private suspend fun pump(opener: () -> InputStream, c: HttpsURLConnection, total: Long, onProgress: (Long, Long) -> Unit) {
         onProgress(0, total)
         opener().use { input ->
             c.outputStream.use { out ->
@@ -332,8 +375,13 @@ object FlipDropClient {
                 var sent = 0L
                 var lastReport = SystemClock.elapsedRealtime()
                 while (true) {
+                    coroutineContext.ensureActive()
                     val n = input.read(buf)
                     if (n < 0) break
+                    if (sent + n > total) {
+                        // The source is longer than the length we committed to: the file changed.
+                        throw FlipDropException("The file changed while sending — try again")
+                    }
                     out.write(buf, 0, n)
                     sent += n
                     val now = SystemClock.elapsedRealtime()
@@ -342,10 +390,23 @@ object FlipDropClient {
                         lastReport = now
                     }
                 }
+                if (sent < total) {
+                    // The source ended before the length we committed to: the file changed.
+                    throw FlipDropException("The file changed while sending — try again")
+                }
                 out.flush()
             }
         }
     }
+
+    /**
+     * RFC 3986 percent-encoding for the `X-File-Name` header. [URLEncoder] does
+     * application/x-www-form-urlencoded, which turns spaces into `+`; the PC decodes with
+     * `Uri.UnescapeDataString`, which leaves `+` untouched, so spaces would survive as literal
+     * `+`. Converting `+` to `%20` makes both sides agree.
+     */
+    private fun encodeFileNameHeader(name: String): String =
+        URLEncoder.encode(name, "UTF-8").replace("+", "%20")
 
     /** Reads and closes the response body so the socket returns to the keep-alive pool. */
     private fun readInput(c: HttpsURLConnection): String =

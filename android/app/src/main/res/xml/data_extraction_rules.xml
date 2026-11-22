@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FlipDrop stores a paired-PC token (AES/GCM ciphertext) and a device id in the
+  "flipdrop" SharedPreferences. Exclude ALL app data from both cloud backup
+  (Android 12+) and device-to-device transfer, so a new or restored device never
+  inherits another phone's pairing. The Keystore key that decrypts the token is
+  itself non-exportable, but the ciphertext and everything else stays off backups
+  and transfers too. (Android 11 and below honour android:fullBackupContent.)
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" />
+        <exclude domain="database" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+        <exclude domain="root" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" />
+        <exclude domain="database" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+        <exclude domain="root" />
+    </device-transfer>
+</data-extraction-rules>

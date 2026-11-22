@@ -5,7 +5,7 @@
 <h1 align="center">FlipDrop</h1>
 
 <p align="center">
-  <b>Press a photo on your phone, flick it upward, and watch it fly off the screen and land on your PC with a burst of colour.</b><br>
+  <b>Press a photo, video or any file on your phone, flick it upward, and watch it fly off the screen and land on your PC with a burst of colour.</b><br>
   No cables, no cloud, no email-it-to-yourself. Just your Wi-Fi.
 </p>
 
@@ -22,9 +22,12 @@
 
 Getting one photo from your phone to your computer shouldn't take a cable, a cloud account and three menus. With FlipDrop:
 
-- 👆 **Flick to send.** Press and hold a photo in the grid, then flick it up toward your PC. It shoots off the top of your phone.
-- 🌈 **It lands with style.** On your PC the photo swoops in from the screen edge and lands with a **Rainbow**, **Portal** or **Comet** effect, then saves itself to your folder.
-- 📤 **Works from any app.** In Gallery, Photos or anywhere else, tap **Share → Fling to PC**.
+- 👆 **Flick to send.** Press and hold a photo, video or file, then flick it up toward your PC. It shoots off the top of your phone.
+- 📁 **Any file, any size.** Photos, videos, PDFs, Word/Excel/PowerPoint, music, ZIPs: anything up to 4 GB, sent as the original with no re-compression. Pick several at once and watch each one's progress.
+- ⚡ **Fast.** Files stream straight to your PC's disk while they're sent, the connection stays warm between files, and big files show a live progress bar on both screens.
+- 🌈 **It lands with style.** On your PC the file swoops in from the screen edge and lands with a **Rainbow**, **Portal**, **Comet** or **Ripple** effect, then saves itself to your folder. Choose Full, Subtle or Off.
+- 📤 **Works from any app.** In Gallery, Files, Drive or anywhere else, tap **Share → Fling to PC** and confirm.
+- 🌙 **Light and dark.** The PC app follows your Windows theme and keeps a history of everything received.
 - 🏠 **Stays in your home.** Phone and PC talk directly over your Wi-Fi. Nothing goes through the internet or anyone's server.
 - 🔐 **Locked to your PC.** Pair once with a 6-digit code. After that, your phone only sends to *your* PC, over encrypted HTTPS that it pins.
 
@@ -32,7 +35,7 @@ Getting one photo from your phone to your computer shouldn't take a cable, a clo
 
 | | 📱 **FlipDrop for Android** (`android/`) | 💻 **FlipDrop for Windows** (`windows/`) |
 |---|---|---|
-| **What it does** | Photo grid, flick to send, Share → Fling to PC | Sits in the tray, catches photos, plays the landing effect |
+| **What it does** | Photos, Videos and Files tabs, flick or multi-select to send, Share → Fling to PC | Sits in the tray, catches files, shows progress, plays the landing effect |
 | **Needs** | Android 13 or newer | Windows 10/11, 64-bit. Self-contained, nothing else to install. |
 | **Settings** | Pair, or type your PC's IP | Landing effect, which edge it flies in from, sound, save folder, test effect |
 
@@ -57,8 +60,11 @@ If your PC doesn't show up, type its IP address into the pairing box. Some route
 - **Local only.** The PC only accepts connections from private (home or office) network addresses.
 - **Encrypted.** It uses HTTPS with the PC's own certificate, which the phone pins when you pair. No other machine can pretend to be your PC.
 - **Secret token.** A random 256-bit token per phone, encrypted in the Android Keystore. The PC stores only its hash, protected with Windows DPAPI.
-- **Checked uploads.** Only real JPEG, PNG, WebP and GIF images are accepted (checked by their bytes), up to 64 MB each. File names are made by the PC, so a file can never be written outside your save folder.
-- **Tested.** There are 15 end-to-end tests for pairing, bad tokens, path traversal and size limits (`windows/tests`).
+- **Security code.** After pairing, the phone and the PC show the same 8-character code. If they differ, someone intercepted the pairing.
+- **Pairing lock-out.** Wrong pairing codes lock pairing for 30 seconds, doubling each time (up to 15 minutes), and the PC warns you.
+- **Checked files.** The PC checks each file's real type from its bytes, so a program renamed to `photo.jpg` is still treated as a program. Programs and scripts are saved but never opened by FlipDrop, and every received file carries Windows' "downloaded from another computer" mark so SmartScreen and Office Protected View still protect you. File names are cleaned by the PC, so a file can never be written outside your save folder.
+- **Can't be flooded.** Uploads are streamed with size, disk-space, connection and speed limits.
+- **Tested.** 41 end-to-end tests cover pairing, lock-out, bad tokens, path traversal, disguised programs, size and disk limits, streaming a 300 MB file and parallel uploads (`windows/tests`).
 
 The full protocol is in [`docs/flipdrop-protocol.md`](docs/flipdrop-protocol.md). Found a security problem? Please report it privately (Security tab → *Report a vulnerability*).
 

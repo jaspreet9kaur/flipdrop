@@ -26,14 +26,16 @@ public sealed class HistoryStore
     private static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
 
     private readonly string _path;
+    private readonly Func<string> _saveFolder;
     private readonly Lock _lock = new();
     private List<HistoryEntry> _items = [];
 
     public event Action? Changed;
 
-    public HistoryStore(string path)
+    public HistoryStore(string path, Func<string> saveFolder)
     {
         _path = path;
+        _saveFolder = saveFolder;
         Load();
     }
 
@@ -41,8 +43,13 @@ public sealed class HistoryStore
     {
         try
         {
-            if (File.Exists(_path))
-                _items = JsonSerializer.Deserialize<List<HistoryEntry>>(File.ReadAllText(_path)) ?? [];
+            if (!File.Exists(_path)) return;
+            var loaded = JsonSerializer.Deserialize<List<HistoryEntry>>(File.ReadAllText(_path)) ?? [];
+            // The stored Path is untrusted on load: drop any entry that does not point inside the
+            // current save folder, so a tampered history.json can't turn Open/Show into a launcher
+            // for an arbitrary file. Open/Show re-check containment too.
+            var folder = _saveFolder();
+            _items = loaded.Where(e => OpenPolicy.IsInside(folder, e.Path)).ToList();
         }
         catch { _items = []; }
     }
@@ -52,7 +59,14 @@ public sealed class HistoryStore
         try
         {
             AppPaths.EnsureDataDir();
-            File.WriteAllText(_path, JsonSerializer.Serialize(_items, Opts));
+            var json = JsonSerializer.Serialize(_items, Opts);
+            // Write atomically: a crash mid-write must never truncate the existing history.json.
+            var tmp = _path + ".tmp";
+            File.WriteAllText(tmp, json);
+            if (File.Exists(_path))
+                File.Replace(tmp, _path, null);
+            else
+                File.Move(tmp, _path);
         }
         catch { /* non-fatal */ }
     }

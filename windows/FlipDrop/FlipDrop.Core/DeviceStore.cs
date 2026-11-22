@@ -50,9 +50,13 @@ public sealed class DeviceStore
         File.WriteAllBytes(_path, Dpapi.Protect(json));
     }
 
+    /// <summary>
+    /// A snapshot of the paired devices. Each element is a copy, so a caller reading a device's mutable
+    /// <see cref="PairedDevice.LastSeenUtc"/> never races <see cref="TryValidateToken"/> mutating the live one.
+    /// </summary>
     public IReadOnlyList<PairedDevice> Devices
     {
-        get { lock (_lock) return _devices.ToList(); }
+        get { lock (_lock) return _devices.Select(d => d with { }).ToList(); }
     }
 
     public void Add(string deviceId, string deviceName, byte[] tokenHash)

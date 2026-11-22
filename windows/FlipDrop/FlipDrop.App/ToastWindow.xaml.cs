@@ -137,7 +137,7 @@ public partial class ToastWindow : Window
         MetaText.Text = risky ? FileTypes.FormatSize(size)
                               : $"{FileTypes.FormatSize(size)}  ·  {device}";
 
-        OpenBtn.Visibility = risky ? Visibility.Collapsed : Visibility.Visible;
+        OpenBtn.Visibility = OpenPolicy.CanOpen(path, kind) ? Visibility.Visible : Visibility.Collapsed;
 
         ShowIcon(kind, risky);
         _ = LoadThumbnailAsync(path, kind, risky);
@@ -184,7 +184,9 @@ public partial class ToastWindow : Window
         ImageSource? img = null;
         if (kind == FileKind.Image)
             img = await ImageDecoder.DecodeAsync(path, 160);
-        else if (kind is FileKind.Video or FileKind.Pdf or FileKind.Document)
+        else if (kind == FileKind.Video)
+            // Only videos get a shell thumbnail. PDFs/documents/others keep their vector type icon so
+            // attacker-controlled document/PDF content is never parsed in-process to make a preview.
             img = await ShellThumbnails.TryGetAsync(path, 108);
 
         if (img is null || _closing) return;
@@ -200,8 +202,17 @@ public partial class ToastWindow : Window
     {
         Native.MakeToolWindow(this);
         Active.Add(this);
-        if (Active.Count > MaxVisible)
-            Active[0].BeginClose();
+        // Retire the oldest live toasts until at most MaxVisible are on screen. A burst can add several
+        // before earlier ones finish their close animation and leave Active, so closing just Active[0]
+        // (which may already be closing) can leave more than MaxVisible stacked. Count live (non-closing)
+        // toasts and close oldest-first until within the cap.
+        int live = 0;
+        foreach (var t in Active)
+            if (!t._closing) live++;
+        for (int i = 0; i < Active.Count && live > MaxVisible; i++)
+        {
+            if (!Active[i]._closing) { Active[i].BeginClose(); live--; }
+        }
         Reflow();
 
         var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(220)) { EasingFunction = new CubicEase() };
@@ -238,8 +249,7 @@ public partial class ToastWindow : Window
     private void OpenFile()
     {
         if (_risky || _filePath is null) return;
-        var ext = Path.GetExtension(_filePath).TrimStart('.');
-        if (FileTypes.IsRiskyExtension(ext)) return; // belt-and-suspenders: never shell-open a risky type
+        if (!OpenPolicy.CanOpen(_filePath, _kind)) return; // allowlist gate: only safe, viewer-friendly types
         try
         {
             Process.Start(new ProcessStartInfo(_filePath) { UseShellExecute = true });

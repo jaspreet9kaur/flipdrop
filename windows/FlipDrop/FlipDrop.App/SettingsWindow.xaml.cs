@@ -69,6 +69,24 @@ public partial class SettingsWindow : Window
         UpdatePairing();
         UpdateLockBanner();
 
+        // The window is hidden to the tray rather than closed (OnClosing), and the instance is reused.
+        // Pause the 500 ms pairing/lock timer while hidden and resume it when shown again, so it doesn't
+        // tick for a window nobody can see. Hide() (from OnClosing) and minimize-to-tray both drive
+        // IsVisible to false, so stopping here covers every hide path.
+        IsVisibleChanged += (_, e) =>
+        {
+            if (e.NewValue is true)
+            {
+                if (!_timer.IsEnabled) _timer.Start();
+                UpdatePairing();
+                UpdateLockBanner();
+            }
+            else
+            {
+                _timer.Stop();
+            }
+        };
+
         _loading = false;
     }
 
@@ -203,12 +221,14 @@ public partial class SettingsWindow : Window
             {
                 Name = h.Name,
                 Path = h.Path,
+                Kind = h.Kind,
                 Sub = $"{FileIcons.Label(h.Kind)}  ·  {FileTypes.FormatSize(h.Size)}  ·  " +
                       $"{h.Time.LocalDateTime:MMM d, HH:mm}  ·  {h.Device}",
                 IconGeometry = FileIcons.Geometry(h.Kind, h.IsRisky),
                 IconBrush = new SolidColorBrush(accent),
                 Tint = new SolidColorBrush(Color.FromArgb(0x22, accent.R, accent.G, accent.B)),
-                OpenVisibility = h.IsRisky ? Visibility.Collapsed : Visibility.Visible,
+                // Offer "Open" only for allowlisted, viewer-friendly types (same gate as the toast).
+                OpenVisibility = OpenPolicy.CanOpen(h.Path, h.Kind) ? Visibility.Visible : Visibility.Collapsed,
             };
         }).ToList();
         HistoryList.ItemsSource = rows;
@@ -217,21 +237,25 @@ public partial class SettingsWindow : Window
 
     private void OnHistoryOpen(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button b || b.Tag is not string path) return;
-        var ext = System.IO.Path.GetExtension(path).TrimStart('.');
-        if (FileTypes.IsRiskyExtension(ext)) return; // never shell-open a risky type
-        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+        if (sender is not Button b || b.Tag is not HistoryRow row) return;
+        // Re-check containment and the open allowlist at click time, in case history.json was tampered
+        // with or the save folder changed since it was loaded.
+        if (!OpenPolicy.IsInside(_app.Settings.SaveFolder, row.Path)) return;
+        if (!OpenPolicy.CanOpen(row.Path, row.Kind)) return; // allowlist gate: only safe, viewer-friendly types
+        try { Process.Start(new ProcessStartInfo(row.Path) { UseShellExecute = true }); }
         catch { /* ignore */ }
     }
 
     private void OnHistoryFolder(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button b || b.Tag is not string path) return;
+        if (sender is not Button b || b.Tag is not HistoryRow row) return;
+        // Only reveal files that still live inside the current save folder.
+        if (!OpenPolicy.IsInside(_app.Settings.SaveFolder, row.Path)) return;
         try
         {
             var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
             psi.ArgumentList.Add("/select,");
-            psi.ArgumentList.Add(path);
+            psi.ArgumentList.Add(row.Path);
             Process.Start(psi);
         }
         catch { /* ignore */ }
@@ -380,6 +404,7 @@ public partial class SettingsWindow : Window
     {
         public string Name { get; init; } = "";
         public string Path { get; init; } = "";
+        public FileKind Kind { get; init; }
         public string Sub { get; init; } = "";
         public Geometry? IconGeometry { get; init; }
         public Brush? IconBrush { get; init; }

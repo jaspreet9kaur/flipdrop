@@ -344,9 +344,9 @@
                         </StackPanel>
                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                           <Button Content="Open" Style="{StaticResource GhostButton}" Padding="12,6" FontSize="12"
-                                  Tag="{Binding Path}" Click="OnHistoryOpen" Visibility="{Binding OpenVisibility}" Margin="0,0,8,0"/>
+                                  Tag="{Binding}" Click="OnHistoryOpen" Visibility="{Binding OpenVisibility}" Margin="0,0,8,0"/>
                           <Button Content="Show in folder" Style="{StaticResource GhostButton}" Padding="12,6" FontSize="12"
-                                  Tag="{Binding Path}" Click="OnHistoryFolder"/>
+                                  Tag="{Binding}" Click="OnHistoryFolder"/>
                         </StackPanel>
                       </Grid>
                     </Border>
