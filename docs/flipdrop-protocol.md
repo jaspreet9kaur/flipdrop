@@ -1,4 +1,10 @@
-# FlipDrop protocol v1 (phone → laptop photo fling)
+# FlipDrop protocol (phone → laptop file fling)
+
+Version 2 (FlipDrop 1.1) adds **any file type** (videos, PDFs, documents, audio, archives…), streaming uploads up
+to 4 GiB, pairing back-off and a security code. Everything in v1 below still works unchanged, so a 1.0 phone keeps
+working with a 1.1 PC. The v2 additions are in [section 5](#5-protocol-v2-additions-flipdrop-11).
+
+## v1 (FlipDrop 1.0, photos only)
 
 Phone app: `android/` (package `io.github.jaspreet9kaur.flipdrop`). PC receiver: `windows/FlipDrop` (WPF, .NET 10).
 Everything stays on the local Wi-Fi. Nothing is sent to the internet.
@@ -50,3 +56,63 @@ Responses:
 - The certificate PFX and the token hashes are stored DPAPI-protected (CurrentUser) under the app's `data` folder next to the executable.
 - Received files are never opened or executed automatically. They are only displayed by the animation, and opened only when the user clicks.
 - Paired devices can be revoked in the settings window.
+
+## 5. Protocol v2 additions (FlipDrop 1.1)
+
+### 5.1 Discovery and ping
+- The discovery reply keeps `"v":1` (1.0 phones check it strictly) and adds `"pv":2` (protocol version).
+- `GET /v1/ping` (authenticated) now returns `{"name":"<COMPUTERNAME>","pv":2,"maxBytes":4294967296}`.
+  A phone that gets no `pv` is talking to a 1.0 PC and must fall back to `/v1/photos` for images only.
+
+### 5.2 POST /v2/files (any file, streamed)
+Headers:
+- `Authorization: Bearer <token>` (required)
+- `Content-Length` (required, exact byte count). A request without it (chunked) gets **411** `{"error":"length_required"}`.
+- `Content-Type`: the phone's MIME guess. Informational only.
+- `X-File-Name`: URL-encoded (UTF-8) original file name. Used only as a *sanitized display name and extension hint*
+  (see 5.3); never used as a path.
+- `X-Fling-Velocity`, `X-Fling-X`: as in v1 (optional).
+
+Body: the raw file bytes, exactly `Content-Length` bytes, at most **4 GiB** (4 294 967 296).
+
+Responses (JSON):
+- **200** `{"saved":"<final file name>","kind":"<kind>","size":<bytes>}` where `kind` is one of
+  `image, video, audio, pdf, document, text, archive, app, other`.
+- **400** `{"error":"incomplete"}`: the body ended before `Content-Length` bytes arrived.
+- **401** bad or missing token.
+- **411** no `Content-Length`.
+- **413** `{"error":"too_large"}`: `Content-Length` over 4 GiB (rejected before reading the body).
+- **503** `{"error":"busy"}` with `Retry-After: 2`: more than 3 uploads already running and the queue wait (30 s) expired.
+- **507** `{"error":"disk_full"}`: the save drive would have less than 512 MiB free after the file (checked before reading).
+
+### 5.3 How the PC stores a file
+1. The body is **streamed** to `<save folder>\.flipdrop-incoming\<random>.part` (hidden folder) as it arrives,
+   with a 1 MiB buffer. Nothing is held whole in memory. If the request aborts or is short, the part file is deleted.
+2. The first 64 bytes are sniffed (magic bytes) to find the real type. **The sniffed type always wins** over the
+   phone's name or MIME type, so a program renamed to `holiday.pdf` is still saved as `.exe` and treated as risky.
+3. File name = the sanitized `X-File-Name` stem: last path segment only, control characters and `<>:"/\|?*` removed,
+   leading/trailing spaces and dots trimmed, Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0-9`, `LPT0-9`)
+   prefixed with `_`, at most 100 characters. Empty → `Fling_yyyyMMdd_HHmmss`.
+   Extension = the sniffed type's extension if known, otherwise the phone's extension if it matches `^[a-z0-9]{1,8}$`,
+   otherwise `bin`. Name clashes become `name (1).ext`, `name (2).ext`, … The final move uses an atomic
+   no-overwrite rename, so two uploads can never overwrite each other.
+4. Every received file gets a **Mark of the Web** (`Zone.Identifier` stream, `ZoneId=3`), so Windows SmartScreen and
+   Office Protected View treat it as a downloaded file.
+5. **Risky types** (programs and scripts: `exe com scr msi msp bat cmd ps1 psm1 vbs vbe js jse wsf wsh hta lnk url pif
+   reg cpl inf dll sys jar apk appx msix msixbundle iso img vhd vhdx` and anything sniffed as a Windows executable)
+   are saved but **never opened by FlipDrop**. The PC only offers "Show in folder" for them.
+6. Received files are never opened or executed automatically.
+
+### 5.4 Limits and back-off (PC)
+- At most 3 uploads write at the same time; further uploads wait up to 30 s, then get 503.
+- Kestrel: max 64 connections, request headers ≤ 16 KiB, headers must arrive within 10 s, bodies must keep at least
+  1 KiB/s after a 10 s grace (slow-loris protection). `/v1/pair` bodies ≤ 4 KiB; `/v1/photos` bodies ≤ 64 MiB.
+- **Pairing back-off:** after 5 wrong codes (from anyone) pairing is locked for 30 s; each further lockout doubles it,
+  up to 15 minutes. A correct pairing resets it. While locked, `/v1/pair` returns **429**
+  `{"error":"locked","retryAfter":<seconds>}` and the PC shows a warning that someone typed wrong codes.
+
+### 5.5 Security code (detects a fake PC during the first pairing)
+Both sides derive an 8-character code from the PC certificate fingerprint:
+`SAS = uppercase hex of SHA-256(UTF-8("flipdrop-sas:" + fp))`, first 8 characters, shown as `XXXX-XXXX`.
+The PC shows it next to the pairing code; the phone shows it after pairing and in its settings. If they differ,
+someone on the network intercepted the pairing: unpair and pair again.

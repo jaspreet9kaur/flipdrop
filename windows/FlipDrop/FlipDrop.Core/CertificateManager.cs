@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 
 namespace FlipDrop.Core;
 
@@ -19,11 +20,20 @@ public sealed class CertificateManager
     /// <summary>SHA-256 of the certificate DER encoding, lowercase hex (the "fp" in discovery).</summary>
     public string FingerprintHex { get; }
 
+    /// <summary>
+    /// Short authentication string shown on both devices to detect a fake PC during the first pairing
+    /// (protocol 5.5): first 8 hex chars of SHA-256("flipdrop-sas:" + fp), uppercase, as "XXXX-XXXX".
+    /// </summary>
+    public string SecurityCode { get; }
+
     public CertificateManager(string dataDir)
     {
         _pfxPath = Path.Combine(dataDir, "flipdrop.pfx");
         Certificate = LoadOrCreate();
         FingerprintHex = Convert.ToHexStringLower(SHA256.HashData(Certificate.RawData));
+
+        var sas = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("flipdrop-sas:" + FingerprintHex)));
+        SecurityCode = $"{sas[..4]}-{sas[4..8]}";
     }
 
     // Windows Schannel (used by Kestrel for server-side TLS) cannot use an ephemeral,

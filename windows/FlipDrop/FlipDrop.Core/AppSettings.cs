@@ -9,12 +9,18 @@ public enum EntryEdge { Right, Left, Top, Bottom }
 public sealed class AppSettings
 {
     public string SaveFolder { get; set; } = AppPaths.DefaultReceiveDir;
-    public string Effect { get; set; } = "Rainbow"; // Rainbow | Portal | Comet
+    public string Effect { get; set; } = "Rainbow"; // Rainbow | Portal | Comet | Ripple
 
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public EntryEdge Edge { get; set; } = EntryEdge.Right;
 
     public bool PlaySound { get; set; } = true;
+
+    /// <summary>Landing animation intensity. "Full" | "Subtle" | "Off". Missing/unknown → Full.</summary>
+    public string Animation { get; set; } = "Full";
+
+    /// <summary>UI theme. "System" | "Light" | "Dark". Missing/unknown → System.</summary>
+    public string Theme { get; set; } = "System";
 
     private static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
 

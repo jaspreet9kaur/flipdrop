@@ -10,11 +10,20 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>FlipDrop</AssemblyName>
     <RootNamespace>FlipDrop.App</RootNamespace>
+    <Version>1.1.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>flipdrop.ico</ApplicationIcon>
     <!-- PerMonitorV2 is declared in app.manifest for WPF; WinForms' DPI-API warning does not apply. -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
+
+  <!-- WPF is the UI framework; WinForms is used only for the tray icon (NotifyIcon) and GDI+
+       icon/sample rendering. Drop the WinForms System.Drawing implicit global using so the many
+       WPF types (Color, Brush, Brushes, FontFamily, ColorConverter) resolve unambiguously.
+       AppIcon.cs and SampleImage.cs opt back in with explicit `using System.Drawing;`. -->
+  <ItemGroup>
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

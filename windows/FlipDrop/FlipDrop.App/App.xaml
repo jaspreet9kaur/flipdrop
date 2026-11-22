@@ -4,17 +4,25 @@
   <Application.Resources>
     <ResourceDictionary>
 
-      <!-- Palette -->
-      <Color x:Key="WindowBgColor">#FFEFF1F5</Color>
-      <SolidColorBrush x:Key="WindowBg" Color="{StaticResource WindowBgColor}"/>
+      <!-- Themeable palette. These are the LIGHT defaults; ThemeManager.Apply swaps the
+           brush objects at runtime, so every consumer references them via DynamicResource. -->
+      <SolidColorBrush x:Key="WindowBg" Color="#FFEFF1F5"/>
       <SolidColorBrush x:Key="SidebarBg" Color="#FFF7F8FA"/>
       <SolidColorBrush x:Key="CardBg" Color="#FFFFFFFF"/>
       <SolidColorBrush x:Key="CardBorder" Color="#FFE3E6EC"/>
       <SolidColorBrush x:Key="TextPrimary" Color="#FF1C1C1E"/>
       <SolidColorBrush x:Key="TextSecondary" Color="#FF8A8A8E"/>
-      <SolidColorBrush x:Key="AccentBrush" Color="#FFE24AA0"/>
       <SolidColorBrush x:Key="HoverBg" Color="#FFECEEF3"/>
       <SolidColorBrush x:Key="SelectBg" Color="#FFEAF0FF"/>
+      <SolidColorBrush x:Key="ControlBg" Color="#FFEDEFF4"/>
+      <SolidColorBrush x:Key="GhostBg" Color="#FFFFFFFF"/>
+      <SolidColorBrush x:Key="TrackBg" Color="#FFD4D6DC"/>
+      <SolidColorBrush x:Key="AmberBg" Color="#FFFFF4E0"/>
+      <SolidColorBrush x:Key="AmberBorder" Color="#FFF2C879"/>
+      <SolidColorBrush x:Key="AmberText" Color="#FF8A5A00"/>
+
+      <!-- Theme-independent brand colours -->
+      <SolidColorBrush x:Key="AccentBrush" Color="#FFE24AA0"/>
 
       <LinearGradientBrush x:Key="FlipGradient" StartPoint="0,0" EndPoint="1,1">
         <GradientStop Color="#FFFF8A3D" Offset="0"/>
@@ -25,7 +33,7 @@
       <!-- Base text -->
       <Style TargetType="TextBlock">
         <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI"/>
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
       </Style>
 
@@ -34,7 +42,7 @@
         <Setter Property="Margin" Value="10,2"/>
         <Setter Property="Padding" Value="12,9"/>
         <Setter Property="FontSize" Value="13.5"/>
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
           <Setter.Value>
@@ -44,10 +52,10 @@
               </Border>
               <ControlTemplate.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                  <Setter TargetName="b" Property="Background" Value="{StaticResource HoverBg}"/>
+                  <Setter TargetName="b" Property="Background" Value="{DynamicResource HoverBg}"/>
                 </Trigger>
                 <Trigger Property="IsChecked" Value="True">
-                  <Setter TargetName="b" Property="Background" Value="{StaticResource SelectBg}"/>
+                  <Setter TargetName="b" Property="Background" Value="{DynamicResource SelectBg}"/>
                   <Setter Property="FontWeight" Value="SemiBold"/>
                 </Trigger>
               </ControlTemplate.Triggers>
@@ -84,19 +92,19 @@
 
       <!-- Secondary (light) button -->
       <Style x:Key="GhostButton" TargetType="Button">
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="Padding" Value="14,8"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
           <Setter.Value>
             <ControlTemplate TargetType="Button">
-              <Border x:Name="b" CornerRadius="9" Background="White" BorderBrush="{StaticResource CardBorder}" BorderThickness="1" Padding="{TemplateBinding Padding}">
+              <Border x:Name="b" CornerRadius="9" Background="{DynamicResource GhostBg}" BorderBrush="{DynamicResource CardBorder}" BorderThickness="1" Padding="{TemplateBinding Padding}">
                 <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
               <ControlTemplate.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                  <Setter TargetName="b" Property="Background" Value="{StaticResource HoverBg}"/>
+                  <Setter TargetName="b" Property="Background" Value="{DynamicResource HoverBg}"/>
                 </Trigger>
               </ControlTemplate.Triggers>
             </ControlTemplate>
@@ -110,7 +118,7 @@
         <Setter Property="Template">
           <Setter.Value>
             <ControlTemplate TargetType="CheckBox">
-              <Border x:Name="track" Width="46" Height="28" CornerRadius="14" Background="#FFD4D6DC">
+              <Border x:Name="track" Width="46" Height="28" CornerRadius="14" Background="{DynamicResource TrackBg}">
                 <Border x:Name="knob" Width="22" Height="22" CornerRadius="11" Background="White"
                         HorizontalAlignment="Left" Margin="3,0,0,0">
                   <Border.Effect>
@@ -130,11 +138,11 @@
         </Setter>
       </Style>
 
-      <!-- Segmented edge chooser (RadioButton) -->
+      <!-- Segmented chooser (RadioButton) -->
       <Style x:Key="SegItem" TargetType="RadioButton">
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="FontSize" Value="12.5"/>
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="Template">
           <Setter.Value>
             <ControlTemplate TargetType="RadioButton">
@@ -143,10 +151,10 @@
               </Border>
               <ControlTemplate.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                  <Setter TargetName="b" Property="Background" Value="{StaticResource HoverBg}"/>
+                  <Setter TargetName="b" Property="Background" Value="{DynamicResource HoverBg}"/>
                 </Trigger>
                 <Trigger Property="IsChecked" Value="True">
-                  <Setter TargetName="b" Property="Background" Value="White"/>
+                  <Setter TargetName="b" Property="Background" Value="{DynamicResource CardBg}"/>
                   <Setter Property="FontWeight" Value="SemiBold"/>
                   <Setter TargetName="b" Property="Effect">
                     <Setter.Value>

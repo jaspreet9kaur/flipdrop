@@ -1,7 +1,6 @@
-using System.Collections.Concurrent;
 using System.Windows;
-using System.Windows.Threading;
 using FlipDrop.Core;
+using Microsoft.Win32;
 using Forms = System.Windows.Forms;
 
 namespace FlipDrop.App;
@@ -15,13 +14,14 @@ public partial class App : System.Windows.Application
     public DeviceStore Devices { get; private set; } = null!;
     public PairingService Pairing { get; private set; } = null!;
     public FlipDropServer Server { get; private set; } = null!;
+    public HistoryStore History { get; private set; } = null!;
 
     private DiscoveryService? _discovery;
     private Forms.NotifyIcon? _tray;
     private SettingsWindow? _settings;
+    private OverlayWindow? _overlay;
 
-    private readonly ConcurrentQueue<PhotoReceivedEventArgs> _queue = new();
-    private bool _playing;
+    private OverlayWindow Overlay => _overlay ??= new OverlayWindow();
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -36,6 +36,10 @@ public partial class App : System.Windows.Application
 
         AppPaths.EnsureDataDir();
         Settings = AppSettings.Load();
+        History = new HistoryStore(System.IO.Path.Combine(AppPaths.DataDir, "history.json"));
+
+        ThemeManager.Apply(Settings.Theme);
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
         try
         {
@@ -43,7 +47,10 @@ public partial class App : System.Windows.Application
             Devices = new DeviceStore(AppPaths.DevicesFile);
             Pairing = new PairingService(Devices);
             Server = new FlipDropServer(Cert, Pairing, Devices, () => Settings.SaveFolder);
-            Server.PhotoReceived += OnPhotoReceived;
+            Server.TransferStarted += OnTransferStarted;
+            Server.TransferProgress += OnTransferProgress;
+            Server.FileReceived += OnFileReceived;
+            Server.TransferFailed += OnTransferFailed;
             await Server.StartAsync();
 
             _discovery = new DiscoveryService(Cert);
@@ -62,6 +69,16 @@ public partial class App : System.Windows.Application
 
         if (Environment.GetEnvironmentVariable("FLIPDROP_START_HIDDEN") != "1")
             ShowSettings();
+    }
+
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        // Follow the Windows light/dark theme when the user chose "System".
+        if (e.Category == UserPreferenceCategory.General &&
+            string.Equals(Settings.Theme, "System", StringComparison.OrdinalIgnoreCase))
+        {
+            Dispatcher.BeginInvoke(() => ThemeManager.Apply(Settings.Theme));
+        }
     }
 
     private void CreateTray()
@@ -97,6 +114,7 @@ public partial class App : System.Windows.Application
     {
         try
         {
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             _tray?.Dispose();
             _discovery?.Dispose();
             _ = Server?.DisposeAsync();
@@ -105,58 +123,76 @@ public partial class App : System.Windows.Application
         Shutdown();
     }
 
-    private void OnPhotoReceived(object? sender, PhotoReceivedEventArgs e)
+    // ---------- transfer events (raised on thread-pool threads → marshal to the dispatcher) ----------
+
+    private void OnTransferStarted(object? sender, TransferStartedEventArgs e) =>
+        Dispatcher.BeginInvoke(() => ToastWindow.ShowStarted(e));
+
+    private void OnTransferProgress(object? sender, TransferProgressEventArgs e) =>
+        Dispatcher.BeginInvoke(() => ToastWindow.UpdateProgress(e));
+
+    private void OnTransferFailed(object? sender, TransferFailedEventArgs e) =>
+        Dispatcher.BeginInvoke(() => ToastWindow.ShowFailed(e));
+
+    private void OnFileReceived(object? sender, FileReceivedEventArgs e) =>
+        Dispatcher.BeginInvoke(() => HandleFileReceived(e));
+
+    private void HandleFileReceived(FileReceivedEventArgs e)
     {
-        // Raised on a Kestrel thread — hop to the UI thread.
-        Dispatcher.BeginInvoke(() =>
+        // Toast immediately, independent of the landing animation.
+        ToastWindow.ShowLanded(e);
+
+        History.Add(new HistoryEntry
         {
-            _queue.Enqueue(e);
-            PumpQueue();
+            Name = e.FileName,
+            Path = e.FilePath,
+            Kind = e.Kind,
+            Size = e.SizeBytes,
+            Time = DateTimeOffset.Now,
+            Device = e.DeviceName,
+            IsRisky = e.IsRisky
         });
-    }
 
-    private async void PumpQueue()
-    {
-        if (_playing) return;
-        _playing = true;
-        try
-        {
-            while (_queue.TryDequeue(out var item))
-            {
-                try
-                {
-                    await PlayOneAsync(item);
-                }
-                catch { /* never let one photo kill the pump */ }
-            }
-        }
-        finally
-        {
-            _playing = false;
-        }
-    }
-
-    private async Task PlayOneAsync(PhotoReceivedEventArgs item)
-    {
         if (Settings.PlaySound)
             Whoosh.Play();
 
-        var overlay = new OverlayWindow();
-        await overlay.PlayAsync(item, Settings.Effect, Settings.Edge);
-        // Hand off to a corner toast that lives on after the overlay closes.
-        ToastWindow.ShowFor(item.FilePath);
+        // Fire-and-forget overlay; it never blocks the next file.
+        Overlay.Play(e, Settings.Effect, Settings.Edge, Settings.Animation);
     }
 
     public void PlayTest()
     {
         var sample = SampleImage.CreateSampleFile();
-        var args = new PhotoReceivedEventArgs
+        var id = Guid.NewGuid();
+        long size = new System.IO.FileInfo(sample).Length;
+
+        var started = new TransferStartedEventArgs
         {
-            FilePath = sample,
-            FileName = System.IO.Path.GetFileName(sample),
+            TransferId = id,
+            DisplayName = System.IO.Path.GetFileName(sample),
+            Kind = FileKind.Image,
+            TotalBytes = size,
+            DeviceName = "This laptop",
             FlingX = 0.5,
             FlingVelocity = 2600
         };
-        Dispatcher.BeginInvoke(() => { _queue.Enqueue(args); PumpQueue(); });
+        var received = new FileReceivedEventArgs
+        {
+            TransferId = id,
+            FilePath = sample,
+            FileName = System.IO.Path.GetFileName(sample),
+            Kind = FileKind.Image,
+            SizeBytes = size,
+            IsRisky = false,
+            DeviceName = "This laptop",
+            FlingX = 0.5,
+            FlingVelocity = 2600
+        };
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            ToastWindow.ShowStarted(started);
+            HandleFileReceived(received);
+        });
     }
 }

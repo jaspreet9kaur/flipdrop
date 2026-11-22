@@ -58,7 +58,8 @@ public sealed class DiscoveryService : IDisposable
                 var reply = JsonSerializer.SerializeToUtf8Bytes(new DiscoveryReply
                 {
                     app = "flipdrop",
-                    v = 1,
+                    v = 1,       // 1.0 phones check this strictly
+                    pv = 2,      // protocol version (1.1 adds /v2/files)
                     name = Environment.MachineName,
                     port = _httpsPort,
                     fp = _cert.FingerprintHex
@@ -80,6 +81,7 @@ public sealed class DiscoveryService : IDisposable
     {
         public string app { get; set; } = "";
         public int v { get; set; }
+        public int pv { get; set; }
         public string name { get; set; } = "";
         public int port { get; set; }
         public string fp { get; set; } = "";

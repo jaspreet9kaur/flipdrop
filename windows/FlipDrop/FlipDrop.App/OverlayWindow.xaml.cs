@@ -13,13 +13,19 @@ using Rectangle = System.Windows.Shapes.Rectangle;
 namespace FlipDrop.App;
 
 /// <summary>
-/// Full-screen, transparent, click-through, topmost overlay that plays one fling
-/// animation (entry flourish -> land at centre -> hold -> glide to the corner) and
-/// then closes. The matching corner toast is shown by the caller afterwards.
+/// A single, reused full-screen, transparent, click-through, topmost overlay that plays fling
+/// landing animations. Each arrival is an independent "group" of visuals that cleans itself up,
+/// so a new file never waits on the previous animation. Bursts beyond <see cref="MaxConcurrent"/>
+/// are coalesced to the lighter "subtle" treatment. The matching corner toast is shown separately
+/// and immediately by the caller.
 /// </summary>
 public partial class OverlayWindow : Window
 {
+    private const int MaxConcurrent = 4;
+
     private double W, H;
+    private int _activeGroups;
+    private bool _shownOnce;
 
     public OverlayWindow()
     {
@@ -27,38 +33,69 @@ public partial class OverlayWindow : Window
         SourceInitialized += (_, _) => Native.MakeClickThrough(this);
     }
 
-    public async Task PlayAsync(PhotoReceivedEventArgs item, string effect, EntryEdge edge)
+    /// <summary>Fire-and-forget. Plays an arrival without blocking the caller or the next file.</summary>
+    public void Play(FileReceivedEventArgs item, string effect, EntryEdge edge, string animation)
+    {
+        if (string.Equals(animation, "Off", StringComparison.OrdinalIgnoreCase)) return;
+        bool subtle = string.Equals(animation, "Subtle", StringComparison.OrdinalIgnoreCase)
+                      || _activeGroups >= MaxConcurrent;
+        _ = PlayGroupAsync(item, effect, edge, subtle);
+    }
+
+    private async Task PlayGroupAsync(FileReceivedEventArgs item, string effect, EntryEdge edge, bool subtle)
+    {
+        _activeGroups++;
+        var bucket = new List<UIElement>();
+        try
+        {
+            EnsureStage();
+
+            FrameworkElement subject;
+            double landedW, landedH;
+
+            BitmapImage? bmp = item.Kind == FileKind.Image && !item.IsRisky
+                ? await ImageDecoder.DecodeAsync(item.FilePath, (int)Math.Ceiling(W * 0.6))
+                : null;
+
+            if (bmp is not null)
+            {
+                double aspect = (double)bmp.PixelWidth / bmp.PixelHeight;
+                landedH = Math.Min(H * 0.55, bmp.PixelHeight);
+                landedW = landedH * aspect;
+                if (landedW > W * 0.82) { landedW = W * 0.82; landedH = landedW / aspect; }
+                subject = BuildPhotoCard(bmp, landedW, landedH);
+            }
+            else
+            {
+                landedW = 380; landedH = 228;
+                subject = BuildFileCard(item, landedW, landedH);
+            }
+
+            await RunSubjectAsync(subject, landedW, landedH, item, effect, edge, subtle, bucket);
+        }
+        catch { /* never let one animation break the receiver */ }
+        finally
+        {
+            foreach (var el in bucket) Stage.Children.Remove(el);
+            _activeGroups--;
+            if (_activeGroups <= 0 && Stage.Children.Count == 0) Hide();
+        }
+    }
+
+    private void EnsureStage()
     {
         W = SystemParameters.PrimaryScreenWidth;
         H = SystemParameters.PrimaryScreenHeight;
         Left = 0; Top = 0; Width = W; Height = H;
         Stage.Width = W; Stage.Height = H;
+        if (!IsVisible) Show();
+        if (!_shownOnce) { _shownOnce = true; Native.MakeClickThrough(this); }
+        Topmost = true;
+    }
 
-        var bmp = LoadBitmap(item.FilePath, (int)Math.Ceiling(H * 0.6));
-        if (bmp is null) { return; }
-
-        Show();
-
-        // --- Landed size (<= 55% screen height, <= 82% width) ---
-        double aspect = (double)bmp.PixelWidth / bmp.PixelHeight;
-        double landedH = Math.Min(H * 0.55, bmp.PixelHeight);
-        double landedW = landedH * aspect;
-        if (landedW > W * 0.82) { landedW = W * 0.82; landedH = landedW / aspect; }
-
-        // --- The photo card ---
-        var photo = new Border
-        {
-            Width = landedW,
-            Height = landedH,
-            CornerRadius = new CornerRadius(18),
-            Background = new ImageBrush(bmp) { Stretch = Stretch.UniformToFill },
-            ClipToBounds = true,
-            Opacity = 0,
-            Effect = new System.Windows.Media.Effects.DropShadowEffect
-            {
-                BlurRadius = 46, ShadowDepth = 14, Opacity = 0.5, Color = Colors.Black, Direction = 270
-            }
-        };
+    private async Task RunSubjectAsync(FrameworkElement subject, double landedW, double landedH,
+        FileReceivedEventArgs item, string effect, EntryEdge edge, bool subtle, List<UIElement> bucket)
+    {
         var scale = new ScaleTransform(1, 1);
         var rotate = new RotateTransform(0);
         var translate = new TranslateTransform(0, 0);
@@ -66,75 +103,201 @@ public partial class OverlayWindow : Window
         group.Children.Add(scale);
         group.Children.Add(rotate);
         group.Children.Add(translate);
-        photo.RenderTransform = group;
-        photo.RenderTransformOrigin = new Point(0.5, 0.5);
-        Canvas.SetLeft(photo, (W - landedW) / 2);
-        Canvas.SetTop(photo, (H - landedH) / 2);
+        subject.RenderTransform = group;
+        subject.RenderTransformOrigin = new Point(0.5, 0.5);
+        subject.Opacity = 0;
+        Canvas.SetLeft(subject, (W - landedW) / 2);
+        Canvas.SetTop(subject, (H - landedH) / 2);
 
-        // --- Entry geometry ---
         double frac = Math.Clamp(item.FlingX ?? 0.5, 0, 1);
-        Point anchor = EdgeAnchor(edge, frac);                 // where it crosses the edge
+        Point anchor = EdgeAnchor(edge, frac);
         (double sx, double sy) = StartOffset(edge, frac, landedW, landedH);
 
         double vel = item.FlingVelocity ?? 2000;
-        double entryMs = Math.Clamp(950 - vel / 9.0, 380, 900); // faster fling => quicker entry
+        double entryMs = Math.Clamp(900 - vel / 9.0, subtle ? 300 : 360, subtle ? 620 : 860);
+        var center = new Point(W / 2, H / 2);
 
-        // Decorations are drawn behind the photo.
-        switch (effect)
+        bool ripple = string.Equals(effect, "Ripple", StringComparison.OrdinalIgnoreCase);
+
+        // Decorations (behind the subject). Subtle skips the big full-screen sweep.
+        if (ripple)
         {
-            case "Portal": BuildPortal(anchor, entryMs); break;
-            case "Comet": BuildComet(anchor, new Point(W / 2, H / 2), entryMs); break;
-            default: BuildRainbow(anchor, edge, entryMs); break;
+            // Ripple lands in place; rings expand on arrival (added below after entry).
+            sx = 0; sy = 0;
         }
-        Stage.Children.Add(photo);
+        else if (!subtle)
+        {
+            switch (effect)
+            {
+                case "Portal": BuildPortal(anchor, entryMs, bucket); break;
+                case "Comet": BuildComet(anchor, center, entryMs, bucket); break;
+                default: BuildRainbow(anchor, entryMs, bucket); break;
+            }
+        }
+        else if (effect == "Comet")
+        {
+            BuildComet(anchor, center, entryMs, bucket, trailOnly: true);
+        }
 
-        // --- Entry: fly from off-edge to centre ---
-        double startScale = effect == "Portal" ? 0.18 : effect == "Comet" ? 0.34 : 0.55;
-        double startAngle = effect == "Comet" ? -14 : effect == "Portal" ? 22 : -6;
+        Add(subject, bucket);
+
+        double startScale = ripple ? 0.72
+            : effect == "Portal" ? 0.2
+            : effect == "Comet" ? 0.36 : 0.56;
+        double startAngle = ripple ? 0 : effect == "Comet" ? -12 : effect == "Portal" ? 18 : -5;
         scale.ScaleX = scale.ScaleY = startScale;
         rotate.Angle = startAngle;
         translate.X = sx; translate.Y = sy;
 
-        IEasingFunction entryEase = effect == "Comet"
-            ? new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.5 } // soft landing bounce
+        IEasingFunction entryEase = effect == "Comet" && !subtle
+            ? new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.4 }
             : new CubicEase { EasingMode = EasingMode.EaseOut };
 
-        Animate(photo, OpacityProperty, 0, 1, Math.Min(entryMs * 0.6, 420), new CubicEase { EasingMode = EasingMode.EaseOut });
+        Animate(subject, OpacityProperty, 0, 1, Math.Min(entryMs * 0.6, 380), new CubicEase { EasingMode = EasingMode.EaseOut });
         Animate(translate, TranslateTransform.XProperty, sx, 0, entryMs, entryEase);
         Animate(translate, TranslateTransform.YProperty, sy, 0, entryMs, entryEase);
         Animate(scale, ScaleTransform.ScaleXProperty, startScale, 1, entryMs, entryEase);
         Animate(scale, ScaleTransform.ScaleYProperty, startScale, 1, entryMs, entryEase);
         Animate(rotate, RotateTransform.AngleProperty, startAngle, 0, entryMs, new CubicEase { EasingMode = EasingMode.EaseOut });
 
+        if (ripple) BuildRipple(center, subtle ? 620 : 900, bucket, beginMs: entryMs * 0.55);
+
         await Task.Delay((int)entryMs + 40);
 
-        // --- Hold ~1.2 s ---
-        await Task.Delay(1200);
+        // Hold ~0.5 s (full) / ~0.3 s (subtle).
+        await Task.Delay(subtle ? 300 : 500);
 
-        // --- Glide to the bottom-right corner as a shrinking thumbnail ---
+        // Glide to the bottom-right toast corner as a shrinking thumbnail.
         var wa = SystemParameters.WorkArea;
-        const double toastW = 236, toastH = 176, margin = 22;
+        const double toastW = 340, toastH = 150, margin = 14;
         double cornerCx = wa.Right - margin - toastW / 2;
         double cornerCy = wa.Bottom - margin - toastH / 2;
-        double exitScale = Math.Min((toastW - 16) / landedW, (toastH - 44) / landedH);
-        double exitMs = 480;
-        var exitEase = new CubicEase { EasingMode = EasingMode.EaseIn };
+        double exitScale = Math.Min((toastW - 24) / landedW, (toastH - 24) / landedH);
+        double exitMs = subtle ? 360 : 460;
+        var exitEase = new CubicEase { EasingMode = EasingMode.EaseInOut };
 
         Animate(translate, TranslateTransform.XProperty, 0, cornerCx - W / 2, exitMs, exitEase);
         Animate(translate, TranslateTransform.YProperty, 0, cornerCy - H / 2, exitMs, exitEase);
         Animate(scale, ScaleTransform.ScaleXProperty, 1, exitScale, exitMs, exitEase);
         Animate(scale, ScaleTransform.ScaleYProperty, 1, exitScale, exitMs, exitEase);
-        Animate(photo, OpacityProperty, 1, 0, 180, null, beginMs: exitMs - 140);
+        Animate(subject, OpacityProperty, 1, 0, 180, new CubicEase { EasingMode = EasingMode.EaseIn }, beginMs: exitMs - 150);
 
-        await Task.Delay((int)exitMs + 60);
-        Close();
+        await Task.Delay((int)exitMs + 50);
     }
 
-    // ---------- Effect decorations ----------
+    // ---------- subjects ----------
 
-    private void BuildRainbow(Point anchor, EntryEdge edge, double entryMs)
+    private static Border BuildPhotoCard(BitmapImage bmp, double w, double h) => new()
     {
-        // A soft, heavily blurred rainbow streak that sweeps in from the edge.
+        Width = w,
+        Height = h,
+        CornerRadius = new CornerRadius(18),
+        Background = new ImageBrush(bmp) { Stretch = Stretch.UniformToFill },
+        ClipToBounds = true,
+        Effect = new System.Windows.Media.Effects.DropShadowEffect
+        { BlurRadius = 46, ShadowDepth = 14, Opacity = 0.5, Color = Colors.Black, Direction = 270 }
+    };
+
+    private static Border BuildFileCard(FileReceivedEventArgs item, double w, double h)
+    {
+        var accent = item.IsRisky ? FileIcons.RiskyAccent : FileIcons.Accent(item.Kind);
+
+        var edgeGlow = new LinearGradientBrush
+        {
+            StartPoint = new Point(0, 0),
+            EndPoint = new Point(1, 1),
+            GradientStops =
+            {
+                new GradientStop(Color.FromRgb(0xFF, 0x8A, 0x3D), 0),
+                new GradientStop(accent, 0.55),
+                new GradientStop(Color.FromRgb(0x8A, 0x5B, 0xE0), 1),
+            }
+        };
+
+        var content = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(26) };
+        content.Children.Add(FileIcons.Build(item.Kind, item.IsRisky, 68, new SolidColorBrush(accent)));
+        content.Children.Add(new TextBlock
+        {
+            Text = item.FileName,
+            FontSize = 20,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brushes.White,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextAlignment = TextAlignment.Center,
+            MaxWidth = w - 52,
+            Margin = new Thickness(0, 16, 0, 0),
+            FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI")
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = item.IsRisky
+                ? $"{FileIcons.Label(item.Kind)} · {FileTypes.FormatSize(item.SizeBytes)} · not opened"
+                : $"{FileIcons.Label(item.Kind)} · {FileTypes.FormatSize(item.SizeBytes)}",
+            FontSize = 13,
+            Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF)),
+            TextAlignment = TextAlignment.Center,
+            Margin = new Thickness(0, 6, 0, 0),
+            FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI")
+        });
+
+        var inner = new Border
+        {
+            CornerRadius = new CornerRadius(16),
+            Background = new LinearGradientBrush(
+                Color.FromRgb(0x24, 0x27, 0x33), Color.FromRgb(0x17, 0x18, 0x22), 90),
+            Child = content
+        };
+
+        return new Border
+        {
+            Width = w,
+            Height = h,
+            CornerRadius = new CornerRadius(19),
+            Padding = new Thickness(3),
+            Background = edgeGlow,
+            Child = inner,
+            Effect = new System.Windows.Media.Effects.DropShadowEffect
+            { BlurRadius = 50, ShadowDepth = 12, Opacity = 0.55, Color = accent, Direction = 270 }
+        };
+    }
+
+    // ---------- effect decorations ----------
+
+    private void BuildRipple(Point center, double ms, List<UIElement> bucket, double beginMs)
+    {
+        var colors = new[]
+        {
+            Color.FromRgb(0xFF, 0x8A, 0x3D),
+            Color.FromRgb(0xE2, 0x4A, 0xA0),
+            Color.FromRgb(0x8A, 0x5B, 0xE0),
+        };
+        for (int i = 0; i < 3; i++)
+        {
+            const double baseD = 220;
+            var ring = new Ellipse
+            {
+                Width = baseD,
+                Height = baseD,
+                Opacity = 0,
+                Stroke = new SolidColorBrush(colors[i % colors.Length]),
+                StrokeThickness = 6 - i,
+                Effect = new System.Windows.Media.Effects.BlurEffect { Radius = 5 }
+            };
+            var rs = new ScaleTransform(0.25, 0.25);
+            ring.RenderTransform = rs;
+            ring.RenderTransformOrigin = new Point(0.5, 0.5);
+            AddCentered(ring, center, bucket);
+
+            double begin = beginMs + i * 130;
+            Animate(ring, OpacityProperty, 0, 0.85, ms * 0.25, new CubicEase(), beginMs: begin);
+            Animate(ring, OpacityProperty, 0.85, 0, ms * 0.8, new CubicEase { EasingMode = EasingMode.EaseIn }, beginMs: begin + ms * 0.2);
+            Animate(rs, ScaleTransform.ScaleXProperty, 0.25, 3.4, ms, new CubicEase { EasingMode = EasingMode.EaseOut }, beginMs: begin);
+            Animate(rs, ScaleTransform.ScaleYProperty, 0.25, 3.4, ms, new CubicEase { EasingMode = EasingMode.EaseOut }, beginMs: begin);
+        }
+    }
+
+    private void BuildRainbow(Point anchor, double entryMs, List<UIElement> bucket)
+    {
         double size = Math.Max(W, H) * 0.5;
         var blob = new Ellipse
         {
@@ -157,7 +320,7 @@ public partial class OverlayWindow : Window
         blob.RenderTransform = t;
         Canvas.SetLeft(blob, anchor.X - size / 2);
         Canvas.SetTop(blob, anchor.Y - size / 2);
-        Stage.Children.Add(blob);
+        Add(blob, bucket);
 
         double towardX = (W / 2 - anchor.X) * 0.55;
         double towardY = (H / 2 - anchor.Y) * 0.55;
@@ -167,9 +330,8 @@ public partial class OverlayWindow : Window
         Animate(t, TranslateTransform.YProperty, 0, towardY, entryMs * 1.3, new CubicEase { EasingMode = EasingMode.EaseOut });
     }
 
-    private void BuildPortal(Point anchor, double entryMs)
+    private void BuildPortal(Point anchor, double entryMs, List<UIElement> bucket)
     {
-        // Concentric glowing rings (orange -> pink -> purple), a glow core, twinkling stars.
         var colors = new[]
         {
             Color.FromRgb(255, 150, 70),
@@ -190,7 +352,7 @@ public partial class OverlayWindow : Window
                 }
             }
         };
-        AddCentered(glow, anchor);
+        AddCentered(glow, anchor, bucket);
         Animate(glow, OpacityProperty, 0, 0.9, entryMs * 0.5, new CubicEase());
         Animate(glow, OpacityProperty, 0.9, 0, entryMs, new CubicEase { EasingMode = EasingMode.EaseIn }, beginMs: entryMs * 0.6);
 
@@ -207,7 +369,7 @@ public partial class OverlayWindow : Window
             var rs = new ScaleTransform(0.2, 0.2);
             ring.RenderTransform = rs;
             ring.RenderTransformOrigin = new Point(0.5, 0.5);
-            AddCentered(ring, anchor);
+            AddCentered(ring, anchor, bucket);
 
             double begin = i * 55;
             Animate(ring, OpacityProperty, 0, 0.9, 220, new CubicEase(), beginMs: begin);
@@ -216,7 +378,6 @@ public partial class OverlayWindow : Window
             Animate(rs, ScaleTransform.ScaleYProperty, 0.2, 1.25, entryMs + begin, new CubicEase { EasingMode = EasingMode.EaseOut }, beginMs: begin);
         }
 
-        // Twinkling stars scattered around the portal.
         var rng = new Random();
         for (int i = 0; i < 16; i++)
         {
@@ -231,21 +392,20 @@ public partial class OverlayWindow : Window
             };
             Canvas.SetLeft(star, anchor.X + Math.Cos(a) * r);
             Canvas.SetTop(star, anchor.Y + Math.Sin(a) * r * 0.7);
-            Stage.Children.Add(star);
+            Add(star, bucket);
             var tw = new DoubleAnimation(0.1, 0.9, TimeSpan.FromMilliseconds(500 + rng.Next(600)))
             {
                 AutoReverse = true,
-                RepeatBehavior = RepeatBehavior.Forever,
+                RepeatBehavior = new RepeatBehavior(3),
                 BeginTime = TimeSpan.FromMilliseconds(rng.Next(400))
             };
             star.BeginAnimation(OpacityProperty, tw);
         }
 
-        // A faint comet trail across to the centre.
-        BuildComet(anchor, new Point(W / 2, H / 2), entryMs, trailOnly: true);
+        BuildComet(anchor, new Point(W / 2, H / 2), entryMs, bucket, trailOnly: true);
     }
 
-    private void BuildComet(Point anchor, Point target, double entryMs, bool trailOnly = false)
+    private void BuildComet(Point anchor, Point target, double entryMs, List<UIElement> bucket, bool trailOnly = false)
     {
         double dx = target.X - anchor.X, dy = target.Y - anchor.Y;
         double len = Math.Max(1, Math.Sqrt(dx * dx + dy * dy));
@@ -265,7 +425,7 @@ public partial class OverlayWindow : Window
         trail.RenderTransform = new RotateTransform(angle, 0, 23);
         Canvas.SetLeft(trail, anchor.X);
         Canvas.SetTop(trail, anchor.Y - 23);
-        Stage.Children.Add(trail);
+        Add(trail, bucket);
 
         double peak = trailOnly ? 0.5 : 0.85;
         Animate(trail, OpacityProperty, 0, peak, entryMs * 0.35, new CubicEase { EasingMode = EasingMode.EaseOut });
@@ -273,7 +433,6 @@ public partial class OverlayWindow : Window
 
         if (trailOnly) return;
 
-        // A bright comet head that races ahead of the photo to the centre.
         var head = new Ellipse
         {
             Width = 40, Height = 40, Opacity = 0,
@@ -292,7 +451,7 @@ public partial class OverlayWindow : Window
         head.RenderTransform = ht;
         Canvas.SetLeft(head, anchor.X - 20);
         Canvas.SetTop(head, anchor.Y - 20);
-        Stage.Children.Add(head);
+        Add(head, bucket);
         Animate(head, OpacityProperty, 0, 0.95, 160, new CubicEase());
         Animate(head, OpacityProperty, 0.95, 0, 260, new CubicEase { EasingMode = EasingMode.EaseIn }, beginMs: entryMs * 0.55);
         Animate(ht, TranslateTransform.XProperty, 0, dx, entryMs * 0.7, new CubicEase { EasingMode = EasingMode.EaseOut });
@@ -301,11 +460,17 @@ public partial class OverlayWindow : Window
 
     // ---------- helpers ----------
 
-    private void AddCentered(FrameworkElement el, Point p)
+    private void Add(UIElement el, List<UIElement> bucket)
+    {
+        Stage.Children.Add(el);
+        bucket.Add(el);
+    }
+
+    private void AddCentered(FrameworkElement el, Point p, List<UIElement> bucket)
     {
         Canvas.SetLeft(el, p.X - el.Width / 2);
         Canvas.SetTop(el, p.Y - el.Height / 2);
-        Stage.Children.Add(el);
+        Add(el, bucket);
     }
 
     private Point EdgeAnchor(EntryEdge edge, double frac) => edge switch
@@ -340,25 +505,5 @@ public partial class OverlayWindow : Window
         };
         if (beginMs > 0) anim.BeginTime = TimeSpan.FromMilliseconds(beginMs);
         ((IAnimatable)target).BeginAnimation(prop, anim);
-    }
-
-    private static BitmapImage? LoadBitmap(string path, int decodeHeight)
-    {
-        try
-        {
-            var bi = new BitmapImage();
-            bi.BeginInit();
-            bi.CacheOption = BitmapCacheOption.OnLoad;
-            bi.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-            bi.DecodePixelHeight = Math.Max(1, decodeHeight);
-            bi.UriSource = new Uri(path);
-            bi.EndInit();
-            bi.Freeze();
-            return bi;
-        }
-        catch
-        {
-            return null;
-        }
     }
 }

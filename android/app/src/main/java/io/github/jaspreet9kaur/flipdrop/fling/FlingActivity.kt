@@ -11,15 +11,10 @@ class FlingActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val openPair = intent.getBooleanExtra(EXTRA_PAIR, false)
+        val openPair = intent.getBooleanExtra(EXTRA_PAIR, false) && PairingStore.load(this) == null
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                FlingScreen(onBack = { finish() })
-                if (openPair && PairingStore.load(this) == null) {
-                    // The share sheet sent us here because nothing is paired yet.
-                    val show = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
-                    if (show.value) PairDialog(onDismiss = { show.value = false }, onPaired = { show.value = false })
-                }
+                FlingScreen(onBack = { finish() }, openPairInitially = openPair)
             }
         }
     }
